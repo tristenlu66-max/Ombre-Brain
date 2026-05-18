@@ -1904,6 +1904,71 @@ async def api_system_status(request):
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
+# =============================================================
+# /api/export-all — 完整数据导出（备份用）
+# Tristen 专用，密码保护，返回所有桶的 zip 包
+# =============================================================
+@mcp.custom_route("/api/export-all", methods=["GET"])
+async def api_export_all(request):
+    """Export all buckets as a zip file for backup."""
+    from starlette.responses import Response, JSONResponse
+    import io
+    import zipfile
+    import datetime
+    
+    err = _require_auth(request)
+    if err:
+        return err
+    
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=True)
+        
+        # Create in-memory zip
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Export each bucket as a JSON file
+            for b in all_buckets:
+                bucket_data = {
+                    "id": b["id"],
+                    "metadata": b.get("metadata", {}),
+                    "content": b.get("content", ""),
+                }
+                bucket_type = b.get("metadata", {}).get("type", "dynamic")
+                filename = f"{bucket_type}/{b['id']}.json"
+                zf.writestr(
+                    filename,
+                    _json_lib.dumps(bucket_data, ensure_ascii=False, indent=2),
+                )
+            
+            # Add manifest
+            manifest = {
+                "exported_at": datetime.datetime.now().isoformat(),
+                "total_buckets": len(all_buckets),
+                "version": "1.3.0",
+                "counts_by_type": {},
+            }
+            for b in all_buckets:
+                t = b.get("metadata", {}).get("type", "dynamic")
+                manifest["counts_by_type"][t] = manifest["counts_by_type"].get(t, 0) + 1
+            zf.writestr(
+                "manifest.json",
+                _json_lib.dumps(manifest, ensure_ascii=False, indent=2),
+            )
+        
+        zip_buffer.seek(0)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"ombre-brain-backup-{timestamp}.zip"
+        
+        return Response(
+            content=zip_buffer.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except Exception as e:
+        logger.error(f"Export failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 # --- Entry point / 启动入口 ---
 if __name__ == "__main__":
