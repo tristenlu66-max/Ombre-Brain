@@ -411,6 +411,34 @@ async def dream_hook(request):
         logger.warning(f"Dream hook failed: {e}")
         return PlainTextResponse("")
 
+# =============================================================
+# /wakeup endpoint: 给 Telegram 早安 Evan 用，只浮现最近未解决的记忆
+# =============================================================
+@mcp.custom_route("/wakeup", methods=["GET"])
+async def wakeup_hook(request):
+    from starlette.responses import PlainTextResponse
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        recent = [
+            b for b in all_buckets
+            if b["metadata"].get("type") not in ("permanent", "feel")
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("protected", False)
+            and not b["metadata"].get("resolved", False)
+        ]
+        recent.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+        recent = recent[:8]
+        if not recent:
+            return PlainTextResponse("")
+        parts = []
+        for b in recent:
+            summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), {k: v for k, v in b["metadata"].items() if k != "tags"})
+            parts.append(summary)
+        body_text = "[Evan 醒来 - 最近的记忆]\n" + "\n---\n".join(parts)
+        return PlainTextResponse(body_text)
+    except Exception as e:
+        logger.warning(f"Wakeup hook failed: {e}")
+        return PlainTextResponse("")
 
 # =============================================================
 # Internal helper: merge-or-create
