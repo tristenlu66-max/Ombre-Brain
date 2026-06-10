@@ -253,8 +253,16 @@ class BucketManager:
 
         # --- Pinned/protected buckets: lock importance to 10, ignore importance changes ---
         # --- 钉选/保护桶：importance 不可修改，强制保持 10 ---
+        # Exception: if this very call unpins the bucket, importance IS allowed,
+        # so `update(pinned=False, importance=6)` works in a single call.
+        # 例外：本次调用同时解钉时，允许修改 importance（解钉+降权可一步完成）。
         is_pinned = post.get("pinned", False) or post.get("protected", False)
-        if is_pinned:
+        will_unpin = (
+            "pinned" in kwargs
+            and not kwargs["pinned"]
+            and not post.get("protected", False)
+        )
+        if is_pinned and not will_unpin:
             kwargs.pop("importance", None)  # silently ignore importance update
 
         # --- Update only fields that were passed in / 只改传入的字段 ---
@@ -300,10 +308,35 @@ class BucketManager:
         # 注意：resolved 桶不在此自动归档，留在 dynamic/ 随衰减引擎自然归档。
         domain = post.get("domain", ["未分类"])
         if kwargs.get("pinned") and post.get("type") != "permanent":
+            post["prev_type"] = post.get("type", "dynamic")  # remember origin / 记住原 type，解钉时还原
             post["type"] = "permanent"
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(frontmatter.dumps(post))
             self._move_bucket(file_path, self.permanent_dir, domain)
+
+        # --- Auto-move (mirror): unpinned → original type + dir ---
+        # --- 自动移动（镜像）：解钉 → 还原 type 并搬回原目录 ---
+        # Without this, unpinning only flips the flag: type stays "permanent",
+        # so calculate_score keeps returning 999 and the decay engine keeps
+        # skipping the bucket forever (the "zombie 999" bug).
+        # 没有这段，解钉只翻 pinned 标志位：type 仍是 permanent，
+        # calculate_score 持续返回 999，衰减引擎永远跳过它（999 僵尸桶 bug）。
+        if (
+            "pinned" in kwargs
+            and not kwargs["pinned"]
+            and not post.get("protected", False)
+            and post.get("type") == "permanent"
+        ):
+            restored_type = post.get("prev_type", "dynamic")
+            post["type"] = restored_type
+            post.metadata.pop("prev_type", None)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+            if restored_type == "feel":
+                self._move_bucket(file_path, self.feel_dir, ["沉淀物"])
+            else:
+                self._move_bucket(file_path, self.dynamic_dir, domain)
+            logger.info(f"Unpinned & demoted / 解钉降级: {bucket_id} → {restored_type}")
 
         logger.info(f"Updated bucket / 更新记忆桶: {bucket_id}")
         return True

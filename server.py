@@ -1499,6 +1499,65 @@ async def api_breath_debug(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@mcp.custom_route("/api/repair-unpinned", methods=["GET", "POST"])
+async def api_repair_unpinned(request):
+    """
+    One-time repair for "zombie 999" buckets: type=="permanent" but pinned==False.
+    These were unpinned before the demote logic existed, so they kept score 999
+    and were skipped by the decay engine forever.
+    GET  → dry run, returns the list of affected buckets (nothing is changed).
+    POST → executes: restores type, moves files back to dynamic/, decay resumes.
+    一次性修复「999 僵尸桶」：type 是 permanent 但 pinned 已是 False 的桶。
+    GET 只预览名单不动手；POST 真正执行（还原 type、搬回 dynamic/、恢复衰减）。
+    """
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        zombies = [
+            b for b in all_buckets
+            if b.get("metadata", {}).get("type") == "permanent"
+            and not b.get("metadata", {}).get("pinned", False)
+            and not b.get("metadata", {}).get("protected", False)
+        ]
+        preview = [
+            {
+                "id": b["id"],
+                "name": b.get("metadata", {}).get("name", b["id"]),
+                "domain": b.get("metadata", {}).get("domain", []),
+                "importance": b.get("metadata", {}).get("importance", 5),
+            }
+            for b in zombies
+        ]
+
+        if request.method == "GET":
+            return JSONResponse({
+                "mode": "dry_run",
+                "count": len(preview),
+                "buckets": preview,
+                "hint": "POST to this same endpoint to execute the repair / 用 POST 请求同一地址即可执行修复",
+            })
+
+        # POST → execute. Calling update(pinned=False) routes each bucket
+        # through the new demote logic in bucket_manager.update().
+        # POST → 执行。复用 update(pinned=False) 走新的解钉降级逻辑。
+        repaired, failed = [], []
+        for b in zombies:
+            ok = await bucket_mgr.update(b["id"], pinned=False)
+            (repaired if ok else failed).append(b["id"])
+        return JSONResponse({
+            "mode": "executed",
+            "repaired_count": len(repaired),
+            "failed_count": len(failed),
+            "repaired": repaired,
+            "failed": failed,
+            "note": "last_active refreshed to now; decay restarts from today / 已刷新激活时间，衰减从今天重新开始",
+        })
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @mcp.custom_route("/dashboard", methods=["GET"])
 async def dashboard(request):
     """Serve the dashboard HTML page."""
