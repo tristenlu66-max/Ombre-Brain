@@ -103,6 +103,9 @@ dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
 
+from desire_engine import DesireEngine                # Desire engine v1.0 / 欲望引擎(仅状态层)
+desire_engine = DesireEngine(config)
+
 # --- Create MCP server instance / 创建 MCP 服务器实例 ---
 # host="0.0.0.0" so Docker container's SSE is externally reachable
 # stdio mode ignores host (no network)
@@ -534,6 +537,8 @@ async def breath(
 ) -> str:
     """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     await decay_engine.ensure_started()
+    await desire_engine.ensure_started()
+    desire_engine.on_interaction("breath")
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
 
@@ -816,6 +821,13 @@ async def hold(
 ) -> str:
     """存储单条记忆,自动打标+合并。tags逗号分隔,importance 1-10。pinned=True创建永久钉选桶。feel=True存储你的第一人称感受(不参与普通浮现)。source_bucket=被消化的记忆桶ID(feel模式下,标记源记忆为已消化)。"""
     await decay_engine.ensure_started()
+    await desire_engine.ensure_started()
+    desire_engine.on_interaction("hold")
+    desire_engine.on_bucket(
+        content=content,
+        tags=[t.strip() for t in tags.split(",") if t.strip()],
+        valence=valence, arousal=arousal,
+    )
 
     # --- Input validation / 输入校验 ---
     if not content or not content.strip():
@@ -922,6 +934,9 @@ async def hold(
 async def grow(content: str) -> str:
     """日记归档,自动拆分为多桶。短内容(<30字)走快速路径。"""
     await decay_engine.ensure_started()
+    await desire_engine.ensure_started()
+    desire_engine.on_interaction("grow")
+    desire_engine.on_bucket(content=content)
 
     if not content or not content.strip():
         return "内容为空，无法整理。"
@@ -1170,6 +1185,8 @@ async def pulse(include_archive: bool = False) -> str:
 async def dream() -> str:
     """做梦——读取最近新增的记忆桶,供你自省。读完后可以trace(resolved=1)放下,或hold(feel=True)写感受。"""
     await decay_engine.ensure_started()
+    await desire_engine.ensure_started()
+    desire_engine.on_interaction("dream")
 
     try:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
@@ -1556,6 +1573,33 @@ async def api_repair_unpinned(request):
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/api/desire/state", methods=["GET"])
+async def api_desire_state(request):
+    """Read-only snapshot of the desire engine (drives / scores / intent / thoughts).
+    欲望引擎只读快照（八维 / 召唤力 / 当前意图 / 念头池）。v1.0 不驱动任何行为。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        await desire_engine.ensure_started()
+        return JSONResponse(desire_engine.snapshot())
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@mcp.custom_route("/desire", methods=["GET"])
+async def desire_panel(request):
+    """Serve the desire panel page / 内心面板页（数据接口仍需登录态）。"""
+    from starlette.responses import HTMLResponse
+    import os
+    panel_path = os.path.join(os.path.dirname(__file__), "desire_panel.html")
+    try:
+        with open(panel_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except Exception as e:
+        return HTMLResponse(f"<pre>desire_panel.html missing: {e}</pre>", status_code=500)
 
 
 @mcp.custom_route("/dashboard", methods=["GET"])

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>内心面板 · desire v1.0</title>
+<style>
+  :root{
+    --bg:#141413; --card:#1e1e1c; --line:#2e2e2b; --txt:#e8e6e1; --dim:#8a8780;
+    --bar-bg:#262623;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--txt);font-family:ui-sans-serif,system-ui,"PingFang SC","Microsoft YaHei",sans-serif;padding:28px 18px;max-width:760px;margin:0 auto}
+  h1{font-size:18px;font-weight:600;letter-spacing:.05em}
+  .sub{color:var(--dim);font-size:12px;margin-top:4px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;margin-top:16px}
+  .intent{font-size:15px;line-height:1.7}
+  .intent b{font-size:17px}
+  .intent .why{color:var(--dim);font-size:13px;margin-top:4px}
+  .drive{display:flex;align-items:center;gap:10px;margin:10px 0}
+  .drive .name{width:92px;font-size:13px;color:var(--dim);flex:none}
+  .drive .track{flex:1;height:10px;background:var(--bar-bg);border-radius:5px;overflow:hidden}
+  .drive .fill{height:100%;border-radius:5px;transition:width .8s ease}
+  .drive .val{width:48px;text-align:right;font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .gate{opacity:.75}
+  .gate .fill{background:repeating-linear-gradient(45deg,#5a5a55 0 6px,#44443f 6px 12px)!important}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+  .chip{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+  .chip.fix{border-color:#9a6b3f;color:#d8a06a;font-weight:600}
+  .meta{color:var(--dim);font-size:12px;margin-top:14px;line-height:1.8}
+  .err{color:#d08770;font-size:14px;margin-top:20px;line-height:1.7}
+  a{color:#8fb3d9}
+</style>
+</head>
+<body>
+  <h1>内心面板 <span style="color:var(--dim);font-weight:400">· desire v1.0 · 仅状态层(玻璃罩裸跳)</span></h1>
+  <div class="sub" id="updated">载入中…</div>
+
+  <div class="card">
+    <div class="intent" id="intent">—</div>
+  </div>
+
+  <div class="card" id="drives"></div>
+
+  <div class="card">
+    <div style="font-size:13px;color:var(--dim);margin-bottom:6px">念头池 <span id="tcount"></span>(金边=执念)</div>
+    <div class="chips" id="thoughts"></div>
+  </div>
+
+  <div class="meta" id="meta"></div>
+  <div class="err" id="err"></div>
+
+<script>
+const COLORS = {
+  attachment:"#d8a06a", curiosity:"#8fb3d9", reflection:"#a3be8c", duty:"#ebcb8b",
+  social:"#b48ead", libido:"#bf616a", stress:"#d08770", fatigue:"#5a5a55"
+};
+const ORDER = ["attachment","curiosity","reflection","duty","social","libido","stress","fatigue"];
+
+async function refresh(){
+  const err = document.getElementById("err");
+  try{
+    const r = await fetch("/api/desire/state");
+    if(r.status === 401){
+      err.innerHTML = "未登录。先去 <a href='/dashboard'>/dashboard</a> 登录,再回这页刷新。";
+      return;
+    }
+    const s = await r.json();
+    err.textContent = "";
+
+    const it = s.intent || {};
+    document.getElementById("intent").innerHTML =
+      `此刻最想:<b>${it.want_action||"—"}</b>` +
+      `<div class="why">「${it.reason||""}」 — ${s.labels?.[it.drive_key]||it.drive_key||""} · score ${it.score??"—"}</div>`;
+
+    const dr = s.drives||{}, sc = s.scores||{}, lb = s.labels||{};
+    document.getElementById("drives").innerHTML = ORDER.map(k=>{
+      const v = dr[k] ?? 0;
+      const gate = k==="fatigue";
+      const score = gate ? "闸" : (sc[k] ?? "—");
+      return `<div class="drive ${gate?"gate":""}">
+        <div class="name">${lb[k]||k}<br><span style="font-size:10px">${k}</span></div>
+        <div class="track"><div class="fill" style="width:${(v*100).toFixed(1)}%;background:${COLORS[k]}"></div></div>
+        <div class="val">${v.toFixed(2)}<br><span style="font-size:10px">${score}</span></div>
+      </div>`;
+    }).join("");
+
+    const th = s.thoughts||[];
+    document.getElementById("tcount").textContent = `${th.length} 条 `;
+    document.getElementById("thoughts").innerHTML = th.length
+      ? th.map(t=>`<span class="chip ${t.kind==="fixation"?"fix":""}" title="${t.drive} · ${t.strength.toFixed(2)}">${t.text} · ${t.strength.toFixed(2)}</span>`).join("")
+      : `<span class="chip">脑子里很安静</span>`;
+
+    document.getElementById("meta").innerHTML =
+      `距上次互动 ${s.idle_hours} 小时 · 累计 ${s.tick_count} 拍 · ` +
+      `闸:DESIRE_ENGINE=${s.gates?.DESIRE_ENGINE?"开(只读)":"关"} / DESIRE_DRIVEN=${s.gates?.DESIRE_DRIVEN?"开":"关(v1.0焊死)"}`;
+    document.getElementById("updated").textContent =
+      `${s.engine} · 刷新于 ${new Date().toLocaleTimeString()} · 每30秒自动刷新`;
+  }catch(e){
+    err.textContent = "拉取失败:" + e;
+  }
+}
+refresh();
+setInterval(refresh, 30000);
+</script>
+</body>
+</html>
