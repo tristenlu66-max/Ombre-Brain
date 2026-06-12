@@ -119,6 +119,7 @@ def default_state(now_ts: float) -> dict:
         "drives": dict(BASELINE),
         "thoughts": [],            # {text, drive, kind, strength, born_at, fed_count}
         "recent_pulses": [],       # [drive, ts] for frequency discount
+        "beat_accum": 0.0,         # fractional thought-beats carried over / 拍零头
         "last_tick_ts": now_ts,
         "last_interaction_ts": now_ts,
         "tick_count": 0,
@@ -145,9 +146,23 @@ def tick_state(state: dict, now_ts: float, p: dict = PARAMS) -> dict:
         factor = 1.0 - math.exp(-rate * h)
         drives[key] = _clamp(drives[key] + (target - drives[key]) * factor)
 
-    beats = min(int(h / p["beat_hours"]), p["max_catchup_beats"])
+    # Beat accumulator: carry fractional beats across ticks. Without this,
+    # any tick interval < beat_hours floors to 0 beats and the remainder is
+    # discarded — thoughts never decay while the process stays awake.
+    # (Found live 2026-06-12: 16 thoughts frozen at seed strength for 2 days.)
+    # 拍累加器：跨tick保留零头。否则只要tick间隔<30分钟,int取整恒为0拍,
+    # 零头随last_tick_ts推进被丢弃——进程醒着,念头就永不衰减。
+    # (2026-06-12线上实锤:16条念头冻在初始强度整两天。)
+    accum = state.get("beat_accum", 0.0) + h
+    beats = min(int(accum / p["beat_hours"]), p["max_catchup_beats"])
     for _ in range(beats):
         _beat_thoughts(state, p)
+    if beats >= p["max_catchup_beats"]:
+        # marathon sleep: catch-up capped, excess discarded by design
+        # 超长睡眠:补课到上限为止,多余的按设计弃掉,不留债
+        state["beat_accum"] = 0.0
+    else:
+        state["beat_accum"] = accum - beats * p["beat_hours"]
 
     # prune frequency window / 清理频率折扣窗口
     cutoff = now_ts - p["freq_window_h"] * 3600.0
@@ -298,6 +313,7 @@ class DesireEngine:
                 st = json.load(f)
             for k in DRIVE_KEYS:                      # forward-compat / 字段兜底
                 st["drives"].setdefault(k, BASELINE[k])
+            st.setdefault("beat_accum", 0.0)          # pre-v1.2 state files / 旧档兜底
             return st
         except FileNotFoundError:
             return default_state(now_ts)
@@ -388,8 +404,13 @@ class DesireEngine:
             hay_low = hay.lower()
             for drive, amount, keys in PULSE_ROUTES:
                 if any(k.lower() in hay_low for k in keys):
-                    if drive == "libido" and not (arousal >= 0.6 or arousal < 0):
-                        continue                      # 低唤醒不入亲密账
+                    if drive == "libido" and arousal < 0.6:
+                        # Spec (worklog §3): libido enters ONLY at arousal>=0.6.
+                        # Unset arousal (-1, e.g. grow-path diaries) no longer
+                        # slips in through the side door.
+                        # 规格:仅arousal>=0.6入亲密账。未传坐标(-1,如grow日记)
+                        # 不再从侧门溜进——2026-06-12实锤Fable日记误入libido。
+                        continue
                     apply_pulse(self.state, drive, amount, now)
                     add_thought(self.state, content[:48] or keys[0], drive, now)
             if 0 <= valence <= 0.35 and arousal >= 0.6:
