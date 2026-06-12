@@ -536,6 +536,39 @@ async def breath(
     importance_min: int = -1,
 ) -> str:
     """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    # Snapshot BEFORE on_interaction: the overnight attachment climb must be
+    # visible, not erased by the act of looking. / 先抓 pre 快照——爬了一夜的
+    # 想念不能被「我来看它」这个动作抹掉。
+    pre = None
+    try:
+        await desire_engine.ensure_started()
+        pre = desire_engine.snapshot()
+    except Exception as e:
+        logger.warning(f"Desire pre-snapshot failed / pre快照失败: {e}")
+    result = await _breath_core(
+        query=query, max_tokens=max_tokens, domain=domain,
+        valence=valence, arousal=arousal,
+        max_results=max_results, importance_min=importance_min,
+    )
+    try:
+        block = desire_engine.state_block(pre)
+        if block:
+            result = f"{result}\n\n{block}"
+    except Exception as e:
+        logger.warning(f"Desire state block append failed / 状态块挂载失败: {e}")
+    return result
+
+
+async def _breath_core(
+    query: str = "",
+    max_tokens: int = 10000,
+    domain: str = "",
+    valence: float = -1,
+    arousal: float = -1,
+    max_results: int = 20,
+    importance_min: int = -1,
+) -> str:
+    # Core retrieval logic, unchanged below. / 检索核心逻辑，以下未动。
     await decay_engine.ensure_started()
     await desire_engine.ensure_started()
     desire_engine.on_interaction("breath")

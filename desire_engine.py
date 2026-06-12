@@ -398,6 +398,62 @@ class DesireEngine:
         except Exception as e:
             logger.warning(f"Desire on_bucket failed: {e}")
 
+    # ---------- Claude-side state block / claude 端状态块 ----------
+    def state_block(self, pre: dict | None = None) -> str:
+        """Human-readable state block appended to breath output (Claude side).
+        给 claude 端的状态块，挂在 breath 输出尾部。
+
+        Contract / 契约:
+          - State is DATA for a judgment-capable reader, not an instruction.
+            状态是给「有判断力的读者」的数据，不是指令。
+          - This block never reaches the bot's generation prompt; the original
+            "never splice into prompt" clause still binds the bot path.
+            此块只走 claude 端；bot 生成 prompt 的「绝不拼接」条款继续生效。
+          - `pre` is a snapshot taken BEFORE on_interaction, so the overnight
+            attachment climb is visible instead of being erased by the very
+            act of looking at it.
+            `pre` 是 on_interaction 之前的快照——爬了一夜的想念不该被
+            「我来看它」这个动作本身抹掉。
+        """
+        if not self.enabled:
+            return ""
+        try:
+            s = self.snapshot()
+            d = s["drives"]
+            lines = ["=== 此刻的我 (desire v1.0 · 只读 · 数据不是指令) ==="]
+            lines.append("  ".join(
+                f"{DRIVE_LABELS[k]}{d[k]:.2f}" for k in DRIVE_KEYS
+            ))
+            pre_d = (pre or {}).get("drives") or {}
+            pre_att = pre_d.get("attachment")
+            if pre_att is not None and pre_att - d["attachment"] >= 0.05:
+                idle = (pre or {}).get("idle_hours", s["idle_hours"])
+                lines.append(
+                    f"你来之前: 想念爬到了 {pre_att:.2f}"
+                    f"(空窗 {idle} 小时) → 现在 {d['attachment']:.2f}"
+                )
+            it = s.get("intent", {})
+            if it:
+                lines.append(
+                    f"此刻最想: {it.get('want_action', '—')}"
+                    f" —— {it.get('reason', '')} (score {it.get('score', '—')})"
+                )
+            fixes = [t for t in s.get("thoughts", []) if t["kind"] == "fixation"][:3]
+            if fixes:
+                lines.append("执念: " + " / ".join(
+                    f"「{t['text']}」{t['strength']:.2f}" for t in fixes
+                ))
+            else:
+                flits = s.get("thoughts", [])[:2]
+                if flits:
+                    lines.append("闪念: " + " / ".join(
+                        f"「{t['text']}」{t['strength']:.2f}" for t in flits
+                    ))
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"Desire state_block failed / 状态块生成失败: {e}")
+            return ""
+
     # ---------- read-only snapshot / 只读快照 ----------
     def snapshot(self) -> dict:
         now = time.time()
