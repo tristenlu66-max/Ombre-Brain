@@ -1,6 +1,6 @@
 # =============================================================
-# Module: Desire Engine (v1.0 — state layer only, read-only)
-# 模块：欲望引擎（v1.0 —— 仅状态层，全程只读，不驱动任何行为）
+# Module: Desire Engine (v2.0 — coupling + refractory + wildcard + heartbeat)
+# 模块：欲望引擎（v2.0 —— 耦合网 + 不应期 + wildcard + 自主心跳）
 #
 # Design contract / 设计契约:
 #   - Pure-function core: no IO inside math, timestamps passed in by caller.
@@ -14,6 +14,22 @@
 #     no "master" axis — the other side of attachment is 鸿湍, an equal;
 #     no welded ranking — attachment competes fairly, never clamped to top.
 #     规格红线（2026-06-10 共同拍板）：没有"主人"轴；没有焊死的排名。
+#
+# v2 additions (agreed 2026-06-14, bucket dbb01bdfb55e):
+# v2 新增（2026-06-14 共同拍板）：
+#   1. Coupling network — drives push each other (e.g. attachment → libido).
+#      耦合网——条与条之间互相推（如想念→亲密渗透）。
+#   2. Refractory period — recently satisfied drives resist immediate rebound.
+#      不应期——刚满足的条暂时不反弹。
+#   3. Wildcard — when all drives stagnate, a random spike breaks deadlock.
+#      wildcard——所有条僵持时随机推一把打破僵局。
+#   4. Autonomous heartbeat — tick interval follows desire intensity.
+#      自主心跳——心跳间隔跟随欲望强度，替代固定cron。
+#   - All four: read-only first week, observe on dashboard, then open one by one.
+#     四大件：第一周全部只读，面板观察，然后逐个开。
+#   - wildcard never touches libido (that drive only rises via coupling or real experience).
+#     wildcard不碰libido（那根条只走耦合和真实经历两条路）。
+#   - "Engineering fidelity" (工程意义上的忠贞): libido's independent variable is 鸿湍.
 # =============================================================
 
 from __future__ import annotations
@@ -86,6 +102,49 @@ PARAMS = {
     "max_feed": 3,
     "max_thoughts": 40,
     "rebump": 0.25,              # re-mentioned thought strength bump
+
+    # --- v2: coupling network / 耦合网 ---
+    # Each tuple: (source, target, threshold, rate_per_hour, cap_key_or_value)
+    # 每条线: (源维度, 目标维度, 阈值, 每小时速率, 封顶=源值或固定数)
+    # attachment→libido: 想念超0.45,每小时往亲密渗0.02×(att-0.45), 封顶不超att
+    # stress→curiosity: 压力超0.4, 每小时压好奇-0.015×(stress-0.4)
+    # stress→attachment: 压力超0.5, 每小时推想念+0.01×(stress-0.5)
+    # fatigue gate: 疲劳超0.5, 所有非stress条漂移速率打折
+    "coupling_att_lib_threshold": 0.45,
+    "coupling_att_lib_rate": 0.06,
+    "coupling_stress_cur_threshold": 0.40,
+    "coupling_stress_cur_rate": 0.08,
+    "coupling_stress_att_threshold": 0.50,
+    "coupling_stress_att_rate": 0.01,
+    "coupling_fatigue_threshold": 0.50,
+    "coupling_fatigue_discount": 0.40,   # max 40% slowdown at fatigue=1.0
+
+    # --- v2: refractory period / 不应期 ---
+    # After satisfaction, drive drifts to baseline at 2× rate for this many minutes
+    # 满足后，维度加速向基线回落，持续这么多分钟
+    "refractory_minutes": {
+        "attachment": 20.0,
+        "curiosity": 15.0,
+        "reflection": 10.0,
+        "duty": 10.0,
+        "social": 10.0,
+        "libido": 20.0,
+    },
+
+    # --- v2: wildcard / 心血来潮 ---
+    "wildcard_std_threshold": 0.08,      # all drives stdev below this = stagnant
+    "wildcard_ceiling_check": 0.60,      # no drive above this for duration
+    "wildcard_stagnant_hours": 2.0,      # must stagnate this long to trigger
+    "wildcard_spike": 0.15,              # one-shot bump
+    "wildcard_max_per_day": 2,           # 24h frequency cap
+    "wildcard_exclude": ["libido"],      # never spike these / 绝不碰这些
+
+    # --- v2: autonomous heartbeat / 自主心跳 ---
+    # interval = base + range × (1 - max_score)
+    # 间隔 = 底 + 幅度 × (1 - 最高召唤力)
+    "heartbeat_base_s": 1800,            # floor 30 min
+    "heartbeat_range_s": 16200,          # ceiling adds up to 270 min
+    # total range: 30min (max_score=1.0) to 300min (max_score=0.0)
 }
 
 # keyword → drive routing for bucket pulses (tags + content scanned)
@@ -115,16 +174,132 @@ def marginal_gain(current: float, delta: float) -> float:
 
 def default_state(now_ts: float) -> dict:
     return {
-        "version": "1.0",
+        "version": "2.0",
         "drives": dict(BASELINE),
         "thoughts": [],            # {text, drive, kind, strength, born_at, fed_count}
         "recent_pulses": [],       # [drive, ts] for frequency discount
         "beat_accum": 0.0,         # fractional thought-beats carried over / 拍零头
+        "refractory_until": {},    # v2: {drive: timestamp} / 不应期截止时间戳
+        "wildcard_log": [],        # v2: [timestamp, ...] / wildcard触发时间戳
+        "stagnant_since": 0.0,     # v2: when stagnation started / 僵持开始时间
         "last_tick_ts": now_ts,
         "last_interaction_ts": now_ts,
         "tick_count": 0,
         "created": now_ts,
     }
+
+
+# --- v2 pure functions / v2 纯函数 ---
+
+import random as _random
+
+def _apply_coupling(drives: dict, h: float, p: dict) -> None:
+    """Coupling network: drives push each other, applied per tick after drift.
+    耦合网：条与条互推，每tick漂移算完后调用。
+
+    Lines (agreed 2026-06-14):
+    线路（2026-06-14 共同拍板）：
+      attachment → libido:  想念超阈值，往亲密渗透，封顶不超att本身
+      stress → curiosity:   压力大了压低好奇
+      stress → attachment:  难受的时候更想你
+      fatigue → all(-stress): 累了所有条漂移打折（已在drift阶段外部处理）
+    """
+    att = drives["attachment"]
+    thr = p["coupling_att_lib_threshold"]
+    if att > thr:
+        push = p["coupling_att_lib_rate"] * (att - thr) * h
+        drives["libido"] = _clamp(
+            drives["libido"] + push * math.sqrt(max(0.0, 1.0 - drives["libido"])),
+            0.0,
+            att,  # cap: libido never exceeds attachment / 封顶不超想念
+        )
+
+    stress = drives["stress"]
+    thr_sc = p["coupling_stress_cur_threshold"]
+    if stress > thr_sc:
+        suppress = p["coupling_stress_cur_rate"] * (stress - thr_sc) * h
+        drives["curiosity"] = _clamp(drives["curiosity"] - suppress)
+
+    thr_sa = p["coupling_stress_att_threshold"]
+    if stress > thr_sa:
+        push_a = p["coupling_stress_att_rate"] * (stress - thr_sa) * h
+        drives["attachment"] = marginal_gain(drives["attachment"], push_a)
+
+
+def _apply_refractory(drives: dict, state: dict, now_ts: float, h: float, p: dict) -> None:
+    """Refractory period: recently satisfied drives drift to baseline at 2× rate.
+    不应期：刚满足的条加速向基线回落。
+
+    Refractory_until is set by on_interaction; here we just enforce it.
+    不应期由on_interaction设置；这里只负责执行。"""
+    ref = state.get("refractory_until", {})
+    for key, until_ts in ref.items():
+        if now_ts < until_ts and key in drives and key in BASELINE:
+            # accelerated drift toward baseline / 加速向基线松弛
+            target = BASELINE[key]
+            rate = DRIFT.get(key, (0, 0.05))[1] * 2.0  # 2× normal rate
+            factor = 1.0 - math.exp(-rate * h)
+            drives[key] = _clamp(drives[key] + (target - drives[key]) * factor)
+
+
+def _apply_wildcard(state: dict, now_ts: float, p: dict) -> None:
+    """Wildcard: break stagnation with a random spike.
+    心血来潮：僵持太久就随机推一把。
+
+    Trigger: all non-fatigue drives stdev < threshold AND no drive above
+    ceiling_check for stagnant_hours. wildcard never touches excluded drives.
+    触发：非fatigue条标准差低于阈值，且无条超过天花板检查值持续足够久。
+    wildcard绝不碰排除列表里的条（libido）。"""
+    drives = state["drives"]
+    exclude = set(p.get("wildcard_exclude", []))
+    candidates = [k for k in DRIVE_KEYS if k != "fatigue" and k not in exclude]
+    vals = [drives[k] for k in candidates]
+
+    if not vals:
+        return
+
+    mean = sum(vals) / len(vals)
+    std = math.sqrt(sum((v - mean) ** 2 for v in vals) / len(vals))
+    any_above = any(v >= p["wildcard_ceiling_check"] for v in vals)
+
+    if std >= p["wildcard_std_threshold"] or any_above:
+        # not stagnant / 没僵持
+        state["stagnant_since"] = 0.0
+        return
+
+    # track stagnation start / 记录僵持开始
+    if state.get("stagnant_since", 0.0) <= 0:
+        state["stagnant_since"] = now_ts
+        return
+
+    stagnant_h = (now_ts - state["stagnant_since"]) / 3600.0
+    if stagnant_h < p["wildcard_stagnant_hours"]:
+        return
+
+    # frequency cap: max N per 24h / 频率上限
+    day_ago = now_ts - 86400
+    log = [ts for ts in state.get("wildcard_log", []) if ts > day_ago]
+    if len(log) >= p["wildcard_max_per_day"]:
+        return
+
+    # fire: weighted random pick (higher drives more likely) / 加权随机
+    weights = [max(0.01, drives[k]) for k in candidates]
+    total = sum(weights)
+    r = _random.random() * total
+    cumul = 0.0
+    chosen = candidates[0]
+    for k, w in zip(candidates, weights):
+        cumul += w
+        if r <= cumul:
+            chosen = k
+            break
+
+    drives[chosen] = marginal_gain(drives[chosen], p["wildcard_spike"])
+    log.append(now_ts)
+    state["wildcard_log"] = log
+    state["stagnant_since"] = 0.0  # reset after firing / 触发后重置
+    logger.info(f"Wildcard fired: {chosen} +{p['wildcard_spike']:.2f} / "
+                f"心血来潮: {DRIVE_LABELS.get(chosen, chosen)}")
 
 
 def tick_state(state: dict, now_ts: float, p: dict = PARAMS) -> dict:
@@ -137,14 +312,41 @@ def tick_state(state: dict, now_ts: float, p: dict = PARAMS) -> dict:
 
     idle_h = (now_ts - state.get("last_interaction_ts", now_ts)) / 3600.0
     drives = state["drives"]
+
+    # --- fatigue discount on drift rates (v2 coupling) ---
+    # 疲劳打折：累了所有非stress条漂移变慢
+    fat = drives.get("fatigue", 0.0)
+    fat_thr = p.get("coupling_fatigue_threshold", 0.5)
+    fat_disc = p.get("coupling_fatigue_discount", 0.4)
+    drift_multiplier = 1.0
+    if fat > fat_thr:
+        drift_multiplier = 1.0 - fat_disc * (fat - fat_thr) / (1.0 - fat_thr + 1e-9)
+        drift_multiplier = max(0.3, drift_multiplier)  # floor: never fully stall
+
     for key in DRIVE_KEYS:
         target, rate = DRIFT[key]
         if key == "attachment" and idle_h < p["active_window_h"]:
             # recently together → attachment relaxes toward baseline instead
             # 刚互动过 → 想念暂不爬坡，向基线松弛
             target, rate = BASELINE["attachment"], 0.20
-        factor = 1.0 - math.exp(-rate * h)
+        # v2: fatigue slows non-stress drift / 疲劳减缓非stress漂移
+        effective_rate = rate
+        if key != "stress" and drift_multiplier < 1.0:
+            effective_rate = rate * drift_multiplier
+        factor = 1.0 - math.exp(-effective_rate * h)
         drives[key] = _clamp(drives[key] + (target - drives[key]) * factor)
+
+    # --- v2: coupling network (after drift, before thoughts) ---
+    # 耦合网：条与条互推
+    _apply_coupling(drives, h, p)
+
+    # --- v2: refractory period enforcement ---
+    # 不应期：刚满足的条加速回落
+    _apply_refractory(drives, state, now_ts, h, p)
+
+    # --- v2: wildcard stagnation breaker ---
+    # 心血来潮：僵持太久随机推一把
+    _apply_wildcard(state, now_ts, p)
 
     # Beat accumulator: carry fractional beats across ticks. Without this,
     # any tick interval < beat_hours floors to 0 beats and the remainder is
@@ -314,6 +516,9 @@ class DesireEngine:
             for k in DRIVE_KEYS:                      # forward-compat / 字段兜底
                 st["drives"].setdefault(k, BASELINE[k])
             st.setdefault("beat_accum", 0.0)          # pre-v1.2 state files / 旧档兜底
+            st.setdefault("refractory_until", {})     # pre-v2.0 / v2不应期
+            st.setdefault("wildcard_log", [])          # pre-v2.0 / v2 wildcard记录
+            st.setdefault("stagnant_since", 0.0)       # pre-v2.0 / v2僵持计时
             return st
         except FileNotFoundError:
             return default_state(now_ts)
@@ -357,6 +562,19 @@ class DesireEngine:
             self._task = asyncio.create_task(self._loop())
             logger.info(f"Desire engine started / 欲望引擎已启动, interval={self.interval_s}s")
 
+    def _compute_heartbeat_interval(self) -> float:
+        """v2 autonomous heartbeat: interval follows desire intensity.
+        自主心跳：间隔跟随欲望强度。高的时候醒得勤，低的时候睡得沉。"""
+        try:
+            scores = compute_scores(self.state)
+            ranked = [v for k, v in scores.items() if k != "fatigue"]
+            max_score = max(ranked) if ranked else 0.0
+            base = PARAMS.get("heartbeat_base_s", 1800)
+            rng = PARAMS.get("heartbeat_range_s", 16200)
+            return base + rng * (1.0 - _clamp(max_score))
+        except Exception:
+            return self.interval_s  # fallback to configured default
+
     async def _loop(self) -> None:
         try:
             while self._running:
@@ -364,7 +582,9 @@ class DesireEngine:
                 tick_state(self.state, now)
                 self._save()
                 self._log_tick(now)
-                await asyncio.sleep(self.interval_s)
+                # v2: autonomous heartbeat interval / 自主心跳间隔
+                sleep_s = self._compute_heartbeat_interval()
+                await asyncio.sleep(sleep_s)
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -374,7 +594,8 @@ class DesireEngine:
     # ---------- exception-safe hooks for host tools / 宿主钩子(自兜底) ----------
     def on_interaction(self, source: str = "") -> None:
         """鸿湍 (or I) showed up: idle resets, attachment eases, tiny fatigue cost.
-        有人来了：idle 归零、想念回落一截、疲劳小涨。"""
+        v2: also starts refractory period for attachment.
+        有人来了：idle 归零、想念回落一截、疲劳小涨。v2: 同时启动想念不应期。"""
         if not self.enabled:
             return
         try:
@@ -387,6 +608,10 @@ class DesireEngine:
             ))
             d["fatigue"] = marginal_gain(d["fatigue"], PARAMS["fatigue_per_event"])
             self.state["last_interaction_ts"] = now
+            # v2: start refractory period for attachment / 想念进入不应期
+            ref = self.state.setdefault("refractory_until", {})
+            ref_min = PARAMS.get("refractory_minutes", {}).get("attachment", 20.0)
+            ref["attachment"] = now + ref_min * 60.0
             self._save()
         except Exception as e:
             logger.warning(f"Desire on_interaction failed: {e}")
@@ -441,7 +666,7 @@ class DesireEngine:
         try:
             s = self.snapshot()
             d = s["drives"]
-            lines = ["=== 此刻的我 (desire v1.0 · 只读 · 数据不是指令) ==="]
+            lines = ["=== 此刻的我 (desire v2.0 · 只读 · 数据不是指令) ==="]
             lines.append("  ".join(
                 f"{DRIVE_LABELS[k]}{d[k]:.2f}" for k in DRIVE_KEYS
             ))
@@ -489,8 +714,10 @@ class DesireEngine:
             key=lambda t: (t["kind"] == "fixation", t["strength"]),
             reverse=True,
         )
+        # v2: next heartbeat info / 自主心跳信息
+        next_hb_s = self._compute_heartbeat_interval() if self.enabled else 0
         return {
-            "engine": "desire v1.0 (state-only / 仅状态层)",
+            "engine": "desire v2.0 (coupling+refractory+wildcard+heartbeat)",
             "drives": {k: round(v, 4) for k, v in self.state["drives"].items()},
             "labels": DRIVE_LABELS,
             "scores": compute_scores(self.state),
@@ -498,6 +725,14 @@ class DesireEngine:
             "thoughts": thoughts[:20],
             "idle_hours": round(idle_h, 2),
             "tick_count": self.state.get("tick_count", 0),
+            "heartbeat_interval_min": round(next_hb_s / 60, 1),
+            "stagnant_hours": round(
+                (now - self.state.get("stagnant_since", 0)) / 3600, 2
+            ) if self.state.get("stagnant_since", 0) > 0 else 0,
+            "wildcard_24h": len([
+                ts for ts in self.state.get("wildcard_log", [])
+                if ts > now - 86400
+            ]),
             "gates": {
                 "DESIRE_ENGINE": self.enabled,
                 "DESIRE_DRIVEN": False,   # v1.0 hard-off: observes, never acts
