@@ -1819,16 +1819,57 @@ function renderTimelineItem(item) {
   const snippet = (item.snippet || '').replace(/</g,'&lt;');
   const pinBadge = item.pinned ? '<span style="font-size:10px;background:var(--accent);color:#fff;padding:1px 6px;border-radius:8px;margin-left:4px;">钉</span>' : '';
   const resolvedStyle = item.resolved ? 'opacity:0.5;' : '';
+  const uid = 'tl-' + item.id;
 
-  return `<div style="margin-bottom:8px;padding:12px 16px;background:var(--surface);border:1px solid ${borderColor};border-radius:12px;${resolvedStyle}backdrop-filter:blur(6px);">
+  return `<div onclick="toggleFullContent('${item.id}','${uid}')" style="margin-bottom:8px;padding:12px 16px;background:var(--surface);border:1px solid ${borderColor};border-radius:12px;${resolvedStyle}backdrop-filter:blur(6px);cursor:pointer;transition:border-color 0.2s;" onmouseenter="this.style.borderColor='${labelColor}'" onmouseleave="this.style.borderColor='${borderColor}'">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
       <span style="font-size:10px;padding:2px 8px;border-radius:8px;border:1px solid ${labelColor};color:${labelColor};font-weight:500;">${labelText}</span>
       ${pinBadge}
+      <span style="font-size:11px;color:var(--text-light);margin-left:4px;">${item.id}</span>
       <span style="font-size:12px;color:var(--text-dim);margin-left:auto;">${time}</span>
     </div>
     <div style="font-size:14px;font-weight:500;color:var(--text);margin-bottom:4px;">${name}</div>
     <div style="font-size:13px;color:var(--text-dim);line-height:1.5;font-family:${fontFamily};white-space:pre-wrap;word-break:break-all;">${snippet}</div>
+    <div id="${uid}" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);"></div>
   </div>`;
+}
+
+let _expandedTl = null;
+async function toggleFullContent(bucketId, uid) {
+  const el = document.getElementById(uid);
+  if (!el) return;
+  // If already expanded, collapse
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    _expandedTl = null;
+    return;
+  }
+  // Collapse previous
+  if (_expandedTl && _expandedTl !== uid) {
+    const prev = document.getElementById(_expandedTl);
+    if (prev) { prev.style.display = 'none'; prev.innerHTML = ''; }
+  }
+  _expandedTl = uid;
+  el.style.display = 'block';
+  el.innerHTML = '<span style="font-size:12px;color:var(--text-dim);">加载中…</span>';
+  try {
+    const res = await fetch(BASE + '/api/bucket/' + bucketId);
+    if (!res.ok) { el.innerHTML = '<span style="color:var(--negative);font-size:12px;">加载失败</span>'; return; }
+    const data = await res.json();
+    const meta = data.metadata || {};
+    const content = (data.content || '').replace(/</g, '&lt;');
+    const isNote = meta.type === 'note';
+    const ff = isNote ? "'Cormorant Garamond',serif" : "inherit";
+    el.innerHTML = `
+      <div style="font-size:13px;color:var(--text);line-height:1.7;font-family:${ff};white-space:pre-wrap;word-break:break-all;">${content}</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--text-dim);">
+        ${meta.domain ? `<span>主题: ${meta.domain.join(', ')}</span>` : ''}
+        ${meta.valence != null ? `<span>V${meta.valence} / A${meta.arousal}</span>` : ''}
+        ${meta.importance ? `<span>重要度: ${meta.importance}</span>` : ''}
+        ${meta.tags ? `<span>标签: ${meta.tags.slice(0,6).join(', ')}</span>` : ''}
+      </div>`;
+  } catch(e) { el.innerHTML = `<span style="color:var(--negative);font-size:12px;">网络错误</span>`; }
 }
 
 // ========================================
