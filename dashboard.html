@@ -612,6 +612,8 @@
 
 <div class="tabs">
   <div class="tab active" data-tab="list">记忆桶</div>
+  <div class="tab" data-tab="calendar">🗓 日历</div>
+  <div class="tab" data-tab="timeline">时间线</div>
   <div class="tab" data-tab="breath">Breath 模拟</div>
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
@@ -623,6 +625,55 @@
   <div class="filters" id="filters"></div>
   <div class="bucket-list" id="bucket-list">
     <div class="loading">加载中…</div>
+  </div>
+</div>
+
+<div class="content" id="calendar-view" style="display:none">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
+    <div style="display:flex;align-items:center;gap:16px;">
+      <button onclick="calPrevMonth()" style="background:none;border:1px solid var(--border);color:var(--text);border-radius:12px;padding:6px 14px;cursor:pointer;font-size:14px;">←</button>
+      <h2 id="cal-title" style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--accent);min-width:160px;text-align:center;"></h2>
+      <button onclick="calNextMonth()" style="background:none;border:1px solid var(--border);color:var(--text);border-radius:12px;padding:6px 14px;cursor:pointer;font-size:14px;">→</button>
+    </div>
+    <button onclick="openNoteForm()" style="background:var(--accent);color:#fff;border:none;border-radius:16px;padding:8px 18px;font-size:13px;cursor:pointer;">✏ 写一条</button>
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:8px;">
+    <div style="text-align:center;font-size:11px;color:var(--text-dim);padding:6px 0;">日</div>
+    <div style="text-align:center;font-size:11px;color:var(--text-dim);padding:6px 0;">一</div>
+    <div style="text-align:center;font-size:11px;color:var(--text-dim);padding:6px 0;">二</div>
+    <div style="text-align:center;font-size:11px;color:var(--text-dim);padding:6px 0;">三</div>
+    <div style="text-align:center;font-size:11px;color:var(--text-dim);padding:6px 0;">四</div>
+    <div style="text-align:center;font-size:11px;color:var(--text-dim);padding:6px 0;">五</div>
+    <div style="text-align:center;font-size:11px;color:var(--text-dim);padding:6px 0;">六</div>
+  </div>
+  <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;"></div>
+  <div style="display:flex;gap:16px;margin-top:12px;font-size:11px;color:var(--text-dim);">
+    <span>● 记忆桶</span> <span style="color:#9A6B4A;">● 鸿湍笔记</span> <span>颜色深浅 = 当日情感均值</span>
+  </div>
+  <div id="cal-detail" style="margin-top:20px;"></div>
+</div>
+
+<div class="content" id="timeline-view" style="display:none">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;">
+    <h2 style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--accent);">时间线</h2>
+    <button onclick="openNoteForm()" style="background:var(--accent);color:#fff;border:none;border-radius:16px;padding:8px 18px;font-size:13px;cursor:pointer;">✏ 写一条</button>
+  </div>
+  <div id="timeline-list" style="position:relative;padding-left:24px;border-left:2px solid var(--border);">
+    <div class="loading">加载中…</div>
+  </div>
+</div>
+
+<!-- Note write form modal -->
+<div id="note-modal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.3);display:none;align-items:center;justify-content:center;">
+  <div style="background:var(--surface-solid);border:1px solid var(--border);border-radius:20px;padding:32px;max-width:520px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,0.15);">
+    <h3 style="font-family:'Cormorant Garamond',serif;font-size:20px;color:#9A6B4A;margin-bottom:16px;">鸿湍的笔记</h3>
+    <input id="note-title" type="text" placeholder="标题（可选）" style="display:block;width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text);font-size:14px;margin-bottom:10px;font-family:inherit;" />
+    <textarea id="note-content" placeholder="写下你这一刻的想法…" style="display:block;width:100%;min-height:160px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:var(--surface);color:var(--text);font-size:14px;font-family:'Cormorant Garamond',serif;line-height:1.7;resize:vertical;"></textarea>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px;">
+      <button onclick="closeNoteForm()" style="background:none;border:1px solid var(--border);color:var(--text-dim);border-radius:12px;padding:8px 18px;font-size:13px;cursor:pointer;">取消</button>
+      <button onclick="submitNote()" style="background:#9A6B4A;color:#fff;border:none;border-radius:12px;padding:8px 22px;font-size:13px;cursor:pointer;">保存</button>
+    </div>
+    <div id="note-msg" style="margin-top:10px;font-size:12px;color:var(--text-dim);"></div>
   </div>
 </div>
 
@@ -1043,11 +1094,15 @@ document.querySelectorAll('.tab').forEach(tab => {
     tab.classList.add('active');
     const target = tab.dataset.tab;
     document.getElementById('list-view').style.display = target === 'list' ? '' : 'none';
+    document.getElementById('calendar-view').style.display = target === 'calendar' ? '' : 'none';
+    document.getElementById('timeline-view').style.display = target === 'timeline' ? '' : 'none';
     document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
     document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
+    if (target === 'calendar') loadCalendar();
+    if (target === 'timeline') loadTimeline();
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
@@ -1646,6 +1701,171 @@ async function batchReview(idsJson, action) {
     });
     detectPatterns();
   } catch(e) {}
+}
+
+// ========================================
+// Calendar / 日历
+// ========================================
+let calYear = new Date().getFullYear();
+let calMonth = new Date().getMonth() + 1;
+let calData = {};
+
+function calPrevMonth() { calMonth--; if (calMonth < 1) { calMonth = 12; calYear--; } loadCalendar(); }
+function calNextMonth() { calMonth++; if (calMonth > 12) { calMonth = 1; calYear++; } loadCalendar(); }
+
+async function loadCalendar() {
+  const months = ['一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+  document.getElementById('cal-title').textContent = `${calYear}年 ${months[calMonth-1]}`;
+  try {
+    const res = await fetch(BASE + `/api/calendar-summary?year=${calYear}&month=${calMonth}`);
+    calData = await res.json();
+  } catch(e) { calData = {}; }
+  renderCalGrid();
+}
+
+function renderCalGrid() {
+  const grid = document.getElementById('cal-grid');
+  grid.innerHTML = '';
+  const firstDay = new Date(calYear, calMonth - 1, 1).getDay();
+  const daysInMonth = new Date(calYear, calMonth, 0).getDate();
+  const today = new Date();
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+
+  // Empty cells before first day
+  for (let i = 0; i < firstDay; i++) {
+    grid.innerHTML += `<div style="min-height:64px;"></div>`;
+  }
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${calYear}-${String(calMonth).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const info = calData[dateStr];
+    const isToday = dateStr === todayStr;
+    let bg = 'transparent';
+    let dots = '';
+
+    if (info && info.count > 0) {
+      // Valence to color: 0=cool blue-grey, 1=warm amber
+      const v = info.avg_valence;
+      const r = Math.round(180 + 60 * v);
+      const g = Math.round(170 + 40 * v);
+      const b_c = Math.round(200 - 80 * v);
+      bg = `rgba(${r},${g},${b_c},${0.15 + 0.25 * Math.min(info.count / 8, 1)})`;
+
+      // Type dots
+      const types = info.types || {};
+      const evtCount = (types.dynamic || 0) + (types.permanent || 0) + (types.feel || 0);
+      const noteCount = types.note || 0;
+      if (evtCount > 0) dots += `<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent);margin:0 1px;"></span>`;
+      if (noteCount > 0) dots += `<span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#9A6B4A;margin:0 1px;"></span>`;
+    }
+
+    grid.innerHTML += `
+      <div onclick="showCalDay('${dateStr}')" style="min-height:64px;padding:6px;border-radius:10px;cursor:pointer;background:${bg};border:${isToday ? '2px solid var(--accent)' : '1px solid transparent'};transition:all 0.2s;" onmouseenter="this.style.borderColor='var(--border-strong)'" onmouseleave="this.style.borderColor='${isToday ? 'var(--accent)' : 'transparent'}'">
+        <div style="font-size:14px;font-weight:${isToday?'600':'400'};color:${isToday?'var(--accent)':'var(--text)'};margin-bottom:4px;">${d}</div>
+        <div style="display:flex;gap:1px;flex-wrap:wrap;">${dots}</div>
+        ${info ? `<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${info.count}条</div>` : ''}
+      </div>`;
+  }
+}
+
+async function showCalDay(dateStr) {
+  const detail = document.getElementById('cal-detail');
+  detail.innerHTML = '<div class="loading">加载中…</div>';
+  try {
+    const [y, m] = dateStr.split('-');
+    const res = await fetch(BASE + `/api/timeline?year=${y}&month=${parseInt(m)}`);
+    const data = await res.json();
+    const items = data[dateStr] || [];
+    if (!items.length) { detail.innerHTML = `<p style="color:var(--text-dim);font-size:13px;">${dateStr} 没有记录</p>`; return; }
+    detail.innerHTML = `<h3 style="font-family:'Cormorant Garamond',serif;font-size:18px;color:var(--accent);margin-bottom:12px;">${dateStr}</h3>` + items.map(renderTimelineItem).join('');
+  } catch(e) { detail.innerHTML = `<p style="color:var(--negative);">加载失败</p>`; }
+}
+
+// ========================================
+// Timeline / 时间线
+// ========================================
+async function loadTimeline() {
+  const list = document.getElementById('timeline-list');
+  list.innerHTML = '<div class="loading">加载中…</div>';
+  try {
+    const res = await fetch(BASE + '/api/timeline?limit=200');
+    const data = await res.json();
+    let html = '';
+    for (const [date, items] of Object.entries(data)) {
+      const d = new Date(date + 'T00:00:00');
+      const weekdays = ['周日','周一','周二','周三','周四','周五','周六'];
+      const label = `${parseInt(date.split('-')[1])}月${parseInt(date.split('-')[2])}日 · ${weekdays[d.getDay()]}`;
+      html += `<div style="margin-bottom:28px;">
+        <div style="position:relative;margin-bottom:12px;">
+          <span style="position:absolute;left:-33px;top:4px;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid var(--surface-solid);"></span>
+          <span style="font-size:13px;font-weight:500;color:var(--accent);letter-spacing:0.3px;">${label}</span>
+          <span style="font-size:11px;color:var(--text-dim);margin-left:8px;">${items.length}条</span>
+        </div>
+        ${items.map(renderTimelineItem).join('')}
+      </div>`;
+    }
+    list.innerHTML = html || '<p style="color:var(--text-dim);">还没有记录</p>';
+  } catch(e) { list.innerHTML = `<p style="color:var(--negative);">加载失败: ${e.message}</p>`; }
+}
+
+function renderTimelineItem(item) {
+  const isNote = item.type === 'note';
+  const borderColor = isNote ? '#9A6B4A' : 'var(--border)';
+  const labelColor = isNote ? '#9A6B4A' : 'var(--accent)';
+  const labelText = isNote ? '鸿湍' : item.type;
+  const fontFamily = isNote ? "'Cormorant Garamond',serif" : "inherit";
+  const time = (item.created || '').substring(11, 16) || '';
+  const name = item.name || item.id;
+  const snippet = (item.snippet || '').replace(/</g,'&lt;');
+  const pinBadge = item.pinned ? '<span style="font-size:10px;background:var(--accent);color:#fff;padding:1px 6px;border-radius:8px;margin-left:4px;">钉</span>' : '';
+  const resolvedStyle = item.resolved ? 'opacity:0.5;' : '';
+
+  return `<div style="margin-bottom:8px;padding:12px 16px;background:var(--surface);border:1px solid ${borderColor};border-radius:12px;${resolvedStyle}backdrop-filter:blur(6px);">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+      <span style="font-size:10px;padding:2px 8px;border-radius:8px;border:1px solid ${labelColor};color:${labelColor};font-weight:500;">${labelText}</span>
+      ${pinBadge}
+      <span style="font-size:12px;color:var(--text-dim);margin-left:auto;">${time}</span>
+    </div>
+    <div style="font-size:14px;font-weight:500;color:var(--text);margin-bottom:4px;">${name}</div>
+    <div style="font-size:13px;color:var(--text-dim);line-height:1.5;font-family:${fontFamily};white-space:pre-wrap;word-break:break-all;">${snippet}</div>
+  </div>`;
+}
+
+// ========================================
+// Note form / 鸿湍笔记写入
+// ========================================
+function openNoteForm() {
+  document.getElementById('note-modal').style.display = 'flex';
+  document.getElementById('note-title').value = '';
+  document.getElementById('note-content').value = '';
+  document.getElementById('note-msg').textContent = '';
+  setTimeout(() => document.getElementById('note-content').focus(), 100);
+}
+function closeNoteForm() { document.getElementById('note-modal').style.display = 'none'; }
+
+async function submitNote() {
+  const content = document.getElementById('note-content').value.trim();
+  if (!content) { document.getElementById('note-msg').textContent = '写点什么再保存'; return; }
+  const title = document.getElementById('note-title').value.trim() || undefined;
+  try {
+    const res = await fetch(BASE + '/api/note', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ content, title })
+    });
+    if (res.ok) {
+      closeNoteForm();
+      // Refresh current view
+      const activeTab = document.querySelector('.tab.active');
+      if (activeTab) {
+        const t = activeTab.dataset.tab;
+        if (t === 'calendar') loadCalendar();
+        if (t === 'timeline') loadTimeline();
+      }
+    } else {
+      const err = await res.json();
+      document.getElementById('note-msg').textContent = err.error || '保存失败';
+    }
+  } catch(e) { document.getElementById('note-msg').textContent = '网络错误'; }
 }
 </script>
 </body>

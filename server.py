@@ -585,7 +585,7 @@ async def _breath_core(
         filtered = [
             b for b in all_buckets
             if int(b["metadata"].get("importance", 0)) >= importance_min
-            and b["metadata"].get("type") not in ("feel",)
+            and b["metadata"].get("type") not in ("feel", "note")
         ]
         filtered.sort(key=lambda b: int(b["metadata"].get("importance", 0)), reverse=True)
         filtered = filtered[:20]
@@ -639,7 +639,7 @@ async def _breath_core(
         unresolved = [
             b for b in all_buckets
             if not b["metadata"].get("resolved", False)
-            and b["metadata"].get("type") not in ("permanent", "feel")
+            and b["metadata"].get("type") not in ("permanent", "feel", "note")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
         ]
@@ -740,6 +740,28 @@ async def _breath_core(
         except Exception as e:
             logger.error(f"Feel retrieval failed: {e}")
             return "读取 feel 失败。"
+
+    # --- Note retrieval: domain="note" is a special channel ---
+    # --- Note 检索：domain="note" 读取鸿湍笔记 ---
+    if domain.strip().lower() == "note":
+        try:
+            all_buckets = await bucket_mgr.list_all(include_archive=False)
+            notes = [b for b in all_buckets if b["metadata"].get("type") == "note"]
+            notes.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+            if not notes:
+                return "鸿湍还没有写过笔记。"
+            results = []
+            for n in notes:
+                created = n["metadata"].get("created", "")
+                name = n["metadata"].get("name", n["id"])
+                entry = f"[{created}] [{name}] [bucket_id:{n['id']}]\n{strip_wikilinks(n['content'])}"
+                results.append(entry)
+                if count_tokens_approx("\n---\n".join(results)) > max_tokens:
+                    break
+            return "=== 鸿湍的笔记 ===\n" + "\n---\n".join(results)
+        except Exception as e:
+            logger.error(f"Note retrieval failed: {e}")
+            return "读取鸿湍笔记失败。"
 
     # --- With args: search mode (keyword + vector dual channel) ---
     # --- 有参数：检索模式（关键词 + 向量双通道）---
@@ -2067,6 +2089,136 @@ async def api_system_status(request):
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+# =============================================================
+# /api/calendar-summary — 月历统计（日历格子上色用）
+# Calendar month summary for dashboard calendar view
+# =============================================================
+@mcp.custom_route("/api/calendar-summary", methods=["GET"])
+async def api_calendar_summary(request):
+    """Return per-day bucket counts and avg valence for a given month."""
+    from starlette.responses import JSONResponse
+    from collections import defaultdict
+    err = _require_auth(request)
+    if err: return err
+    try:
+        year = int(request.query_params.get("year", "2026"))
+        month = int(request.query_params.get("month", "6"))
+        prefix = f"{year}-{month:02d}"
+
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+        days = defaultdict(lambda: {"count": 0, "types": defaultdict(int), "valence_sum": 0.0})
+
+        for b in all_buckets:
+            created = b["metadata"].get("created", "")
+            if not str(created).startswith(prefix):
+                continue
+            day_key = str(created)[:10]  # "2026-06-15"
+            entry = days[day_key]
+            entry["count"] += 1
+            btype = b["metadata"].get("type", "dynamic")
+            entry["types"][btype] += 1
+            entry["valence_sum"] += float(b["metadata"].get("valence", 0.5))
+
+        result = {}
+        for day_key, entry in days.items():
+            avg_v = round(entry["valence_sum"] / entry["count"], 2) if entry["count"] else 0.5
+            result[day_key] = {
+                "count": entry["count"],
+                "types": dict(entry["types"]),
+                "avg_valence": avg_v,
+            }
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================
+# /api/timeline — 按日期分组的桶列表（时间线 + 日历展开用）
+# Buckets grouped by date for timeline and calendar detail views
+# =============================================================
+@mcp.custom_route("/api/timeline", methods=["GET"])
+async def api_timeline(request):
+    """Return buckets grouped by creation date, newest first."""
+    from starlette.responses import JSONResponse
+    from collections import defaultdict
+    err = _require_auth(request)
+    if err: return err
+    try:
+        year = request.query_params.get("year", "")
+        month = request.query_params.get("month", "")
+        limit = int(request.query_params.get("limit", "200"))
+
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+
+        # Optional year-month filter
+        if year and month:
+            prefix = f"{int(year)}-{int(month):02d}"
+            all_buckets = [b for b in all_buckets if str(b["metadata"].get("created", "")).startswith(prefix)]
+
+        # Sort by created desc
+        all_buckets.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+        all_buckets = all_buckets[:limit]
+
+        days = defaultdict(list)
+        for b in all_buckets:
+            created = str(b["metadata"].get("created", ""))
+            day_key = created[:10] if len(created) >= 10 else "unknown"
+            days[day_key].append({
+                "id": b["id"],
+                "name": b["metadata"].get("name", ""),
+                "type": b["metadata"].get("type", "dynamic"),
+                "domain": b["metadata"].get("domain", []),
+                "valence": b["metadata"].get("valence", 0.5),
+                "arousal": b["metadata"].get("arousal", 0.3),
+                "importance": b["metadata"].get("importance", 5),
+                "created": created,
+                "snippet": b["content"][:200] if b.get("content") else "",
+                "pinned": b["metadata"].get("pinned", False),
+                "resolved": b["metadata"].get("resolved", False),
+            })
+
+        # Sort days desc
+        sorted_days = dict(sorted(days.items(), reverse=True))
+        return JSONResponse(sorted_days)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================
+# /api/note — Tristen 写入笔记（不脱水、不打标、不合并、原文直存）
+# Tristen's companion notes — raw storage, no dehydration
+# =============================================================
+@mcp.custom_route("/api/note", methods=["POST"])
+async def api_note_create(request):
+    """Create a companion note from Tristen (stored as-is, no processing)."""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    content = (body.get("content") or "").strip()
+    if not content:
+        return JSONResponse({"error": "内容不能为空"}, status_code=400)
+
+    title = (body.get("title") or "").strip() or None
+
+    # Direct create — no dehydrator, no embedding, no merge
+    bucket_id = await bucket_mgr.create(
+        content=content,
+        bucket_type="note",
+        name=title,
+        tags=["鸿湍笔记"],
+        importance=5,
+        valence=0.5,
+        arousal=0.3,
+    )
+
+    return JSONResponse({"id": bucket_id, "created": True})
+
 
 # =============================================================
 # /api/export-all — 完整数据导出（备份用）
