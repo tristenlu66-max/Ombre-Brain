@@ -647,8 +647,25 @@
     <div style="text-align:center;font-size:11px;color:var(--text-dim);padding:6px 0;">六</div>
   </div>
   <div id="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;"></div>
-  <div style="display:flex;gap:16px;margin-top:12px;font-size:11px;color:var(--text-dim);">
-    <span>● 记忆桶</span> <span style="color:#9A6B4A;">● 鸿湍笔记</span> <span>颜色深浅 = 当日情感均值</span>
+  <div style="display:flex;gap:20px;align-items:center;margin-top:14px;flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);">
+      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);"></span> 记忆桶
+      <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#9A6B4A;margin-left:8px;"></span> 鸿湍笔记
+    </div>
+    <div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-dim);">
+      <span>当日情感：</span>
+      <span style="display:inline-block;width:22px;height:14px;border-radius:4px;background:hsla(215,25%,72%,0.5);" title="低落 (0-0.25)"></span>
+      <span style="display:inline-block;width:22px;height:14px;border-radius:4px;background:hsla(150,18%,74%,0.5);" title="平淡 (0.25-0.4)"></span>
+      <span style="display:inline-block;width:22px;height:14px;border-radius:4px;background:hsla(38,30%,78%,0.5);" title="中性 (0.4-0.6)"></span>
+      <span style="display:inline-block;width:22px;height:14px;border-radius:4px;background:hsla(32,50%,72%,0.5);" title="温暖 (0.6-0.8)"></span>
+      <span style="display:inline-block;width:22px;height:14px;border-radius:4px;background:hsla(28,65%,68%,0.5);" title="明亮 (0.8-1.0)"></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:2px;font-size:10px;color:var(--text-light);">
+      低落 ← → 明亮
+    </div>
+    <div style="font-size:10px;color:var(--text-light);">
+      格子越深 = 当天条目越多
+    </div>
   </div>
   <div id="cal-detail" style="margin-top:20px;"></div>
 </div>
@@ -1744,12 +1761,20 @@ function renderCalGrid() {
     let dots = '';
 
     if (info && info.count > 0) {
-      // Valence to color: 0=cool blue-grey, 1=warm amber
+      // Valence → distinct color scale (5 stops):
+      // 0.0-0.25 = slate blue (低落)  →  0.25-0.4 = muted sage (平淡)
+      // 0.4-0.6 = warm sand (中性)   →  0.6-0.8 = soft amber (温暖)
+      // 0.8-1.0 = warm gold (明亮)
       const v = info.avg_valence;
-      const r = Math.round(180 + 60 * v);
-      const g = Math.round(170 + 40 * v);
-      const b_c = Math.round(200 - 80 * v);
-      bg = `rgba(${r},${g},${b_c},${0.15 + 0.25 * Math.min(info.count / 8, 1)})`;
+      let hue, sat, light;
+      if (v < 0.25)      { hue = 215; sat = 25; light = 72; }  // slate blue
+      else if (v < 0.4)  { hue = 150; sat = 18; light = 74; }  // muted sage
+      else if (v < 0.6)  { hue = 38;  sat = 30; light = 78; }  // warm sand
+      else if (v < 0.8)  { hue = 32;  sat = 50; light = 72; }  // soft amber
+      else                { hue = 28;  sat = 65; light = 68; }  // warm gold
+      // Intensity by count: more entries → more opaque
+      const alpha = 0.25 + 0.45 * Math.min(info.count / 10, 1);
+      bg = `hsla(${hue},${sat}%,${light}%,${alpha.toFixed(2)})`;
 
       // Type dots
       const types = info.types || {};
