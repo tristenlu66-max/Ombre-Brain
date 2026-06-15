@@ -153,6 +153,7 @@ class BucketManager:
         }
         if pinned:
             metadata["pinned"] = True
+            metadata["pin_level"] = 2  # default L2 (scene-triggered); use trace to change
         if protected:
             metadata["protected"] = True
 
@@ -295,6 +296,8 @@ class BucketManager:
                 post["importance"] = 10  # pinned → lock importance to 10
         if "digested" in kwargs:
             post["digested"] = bool(kwargs["digested"])
+        if "pin_level" in kwargs:
+            post["pin_level"] = max(1, min(3, int(kwargs["pin_level"])))
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
 

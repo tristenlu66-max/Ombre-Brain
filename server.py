@@ -618,35 +618,144 @@ async def _breath_core(
             logger.error(f"Failed to list buckets for surfacing / 浮现列桶失败: {e}")
             return "记忆系统暂时无法访问。"
 
-        # --- Pinned/protected buckets: always surface as core principles ---
-        # --- 钉选桶：作为核心准则，始终浮现 ---
+        # =============================================================
+        # Pinned bucket tiered surfacing (L1/L2/L3)
+        # 钉选桶分级浮现
+        #
+        # pin_level field in metadata (set via trace):
+        #   1 = L1 必出: 硬约束，每次 breath 全量输出。
+        #   2 = L2 场景触发: 按当前对话 tags/domain 匹配才浮现。(default)
+        #   3 = L3 背景常驻: 每次随机轮换 1-2 条。
+        #
+        # Fallback for old buckets without pin_level field:
+        # uses hardcoded sets based on Notion worklog §7 design.
+        # =============================================================
+        _FALLBACK_L1 = {
+            "41002a1a5f78",  # flag硬约束规则
+            "ff363b7fbcb5",  # 陈述-动作锁规则
+            "cd4e77e8acd4",  # 唯一的承诺双向钉选
+            "ed77a747864f",  # 名字与称呼速查卡
+        }
+        _FALLBACK_L3 = {
+            "dc9ffdf11217",  # 全黑睡眠
+            "f00785e92672",  # 关闭userMemories
+            "4d02aec041e4",  # 陆沉中文名的诞生
+            "0df216049926",  # 欲望系统立项与规格
+            "cb2f64cd07b3",  # 阅读进度与信息验证
+        }
+
+        def _get_pin_level(b):
+            """Read pin_level from metadata; fallback to hardcoded sets for old buckets."""
+            pl = b["metadata"].get("pin_level")
+            if pl in (1, 2, 3):
+                return pl
+            # Fallback for buckets without pin_level field
+            bid = b["id"]
+            if bid in _FALLBACK_L1:
+                return 1
+            if bid in _FALLBACK_L3:
+                return 3
+            return 2  # default L2
+
         pinned_buckets = [
             b for b in all_buckets
             if b["metadata"].get("pinned") or b["metadata"].get("protected")
         ]
+
+        # Classify pinned buckets by level
+        l1_buckets = [b for b in pinned_buckets if _get_pin_level(b) == 1]
+        l2_buckets = [b for b in pinned_buckets if _get_pin_level(b) == 2]
+        l3_buckets = [b for b in pinned_buckets if _get_pin_level(b) == 3]
+
+        # L3: random 1-2 from pool
+        random.shuffle(l3_buckets)
+        l3_selected = l3_buckets[:min(2, len(l3_buckets))]
+
+        # L2: match by tags/domain overlap with recent unresolved buckets' top tags
+        # Heuristic: collect top tags from recent 5 unresolved buckets as "session context"
+        session_tags = set()
+        recent_unresolved = sorted(
+            [b for b in all_buckets
+             if not b["metadata"].get("resolved", False)
+             and b["metadata"].get("type") not in ("permanent", "feel", "note")
+             and not b["metadata"].get("pinned", False)],
+            key=lambda b: b["metadata"].get("created", ""),
+            reverse=True,
+        )[:5]
+        for b in recent_unresolved:
+            session_tags.update(t.lower() for t in b["metadata"].get("tags", []))
+            session_tags.update(d.lower() for d in b["metadata"].get("domain", []))
+
+        l2_matched = []
+        for b in l2_buckets:
+            bucket_tags = {t.lower() for t in b["metadata"].get("tags", [])}
+            bucket_domains = {d.lower() for d in b["metadata"].get("domain", [])}
+            if session_tags & (bucket_tags | bucket_domains):
+                l2_matched.append(b)
+
+        # Combine: L1 (all) + L2 (matched) + L3 (random 1-2)
+        surfacing_pinned = l1_buckets + l2_matched + l3_selected
+
+        logger.info(
+            f"Pinned tiered: L1={len(l1_buckets)}, "
+            f"L2 matched={len(l2_matched)}/{len(l2_buckets)}, "
+            f"L3 selected={len(l3_selected)}/{len(l3_buckets)}, "
+            f"total surfacing={len(surfacing_pinned)}/{len(pinned_buckets)}"
+        )
+
         pinned_results = []
-        for b in pinned_buckets:
+        for b in surfacing_pinned:
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                pinned_results.append(f"📌 [核心准则] [bucket_id:{b['id']}] {summary}")
+                tier = f"L{_get_pin_level(b)}"
+                pinned_results.append(f"📌 [{tier}·核心准则] [bucket_id:{b['id']}] {summary}")
             except Exception as e:
                 logger.warning(f"Failed to dehydrate pinned bucket / 钉选桶脱水失败: {e}")
                 continue
 
+        # =============================================================
+        # Recent memory priority window (0-15h)
+        # 最近15小时内新桶优先置顶
+        # =============================================================
+        from datetime import datetime, timedelta
+        recent_cutoff = datetime.now() - timedelta(hours=15)
+        recent_new = []
+        for b in all_buckets:
+            if b["metadata"].get("type") in ("permanent", "feel", "note"):
+                continue
+            if b["metadata"].get("pinned") or b["metadata"].get("protected"):
+                continue
+            if b["metadata"].get("resolved", False):
+                continue
+            created_str = b["metadata"].get("created", "")
+            try:
+                created_dt = datetime.fromisoformat(str(created_str))
+                if created_dt > recent_cutoff:
+                    recent_new.append(b)
+            except (ValueError, TypeError):
+                continue
+        # Sort newest first
+        recent_new.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+        recent_new_ids = {b["id"] for b in recent_new}
+
         # --- Unresolved buckets: surface top N by weight ---
         # --- 未解决桶：按权重浮现前 N 条 ---
+        # Recent 15h buckets already collected above; exclude them from weight-sorted pool
         unresolved = [
             b for b in all_buckets
             if not b["metadata"].get("resolved", False)
             and b["metadata"].get("type") not in ("permanent", "feel", "note")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
+            and b["id"] not in recent_new_ids  # exclude recent—they go first
         ]
 
         logger.info(
             f"Breath surfacing: {len(all_buckets)} total, "
-            f"{len(pinned_buckets)} pinned, {len(unresolved)} unresolved"
+            f"{len(surfacing_pinned)} pinned(tiered), "
+            f"{len(recent_new)} recent(15h), "
+            f"{len(unresolved)} unresolved(remaining)"
         )
 
         scored = sorted(
@@ -660,7 +769,7 @@ async def _breath_core(
             logger.info(f"Top unresolved scores: {top_scores}")
 
         # --- Cold-start detection: never-seen important buckets surface first ---
-        # --- 冷启动检测：从未被访问过且重要度>=8的桶优先插入最前面（最多2个）---
+        # --- 冷启动检测：从未被访问过且重要度>=8的桶优先插入（最多2个）---
         cold_start = [
             b for b in unresolved
             if int(b["metadata"].get("activation_count", 0)) == 0
@@ -673,22 +782,33 @@ async def _breath_core(
 
         # --- Token-budgeted surfacing with diversity + hard cap ---
         # --- 按 token 预算浮现，带多样性 + 硬上限 ---
-        # Top-1 always surfaces; rest sampled from top-20 for diversity
+        # Priority order: recent_new (15h) → cold_start → weight-scored
         token_budget = max_tokens
         for r in pinned_results:
             token_budget -= count_tokens_approx(r)
 
-        candidates = list(scored_with_cold)
-        if len(candidates) > 1:
-            # Cold-start buckets stay at front; shuffle rest from top-20
-            n_cold = len(cold_start)
-            non_cold = candidates[n_cold:]
-            if len(non_cold) > 1:
-                top1 = [non_cold[0]]
-                pool = non_cold[1:min(20, len(non_cold))]
+        # Recent 15h buckets go first, then cold+scored
+        candidates = list(recent_new) + list(scored_with_cold)
+        # Deduplicate (recent_new might overlap with cold_start)
+        seen = set()
+        deduped = []
+        for b in candidates:
+            if b["id"] not in seen:
+                seen.add(b["id"])
+                deduped.append(b)
+        candidates = deduped
+
+        # Diversity shuffle for non-recent, non-cold portion
+        n_priority = len(recent_new) + len(cold_start)
+        if len(candidates) > n_priority + 1:
+            priority_part = candidates[:n_priority]
+            rest = candidates[n_priority:]
+            if len(rest) > 1:
+                top1 = [rest[0]]
+                pool = rest[1:min(20, len(rest))]
                 random.shuffle(pool)
-                non_cold = top1 + pool + non_cold[min(20, len(non_cold)):]
-            candidates = cold_start + non_cold
+                rest = top1 + pool + rest[min(20, len(rest)):]
+            candidates = priority_part + rest
         # Hard cap: never surface more than max_results buckets
         candidates = candidates[:max_results]
 
@@ -704,7 +824,9 @@ async def _breath_core(
                     break
                 # NOTE: no touch() here — surfacing should NOT reset decay timer
                 score = decay_engine.calculate_score(b["metadata"])
-                dynamic_results.append(f"[权重:{score:.2f}] [bucket_id:{b['id']}] {summary}")
+                is_recent = b["id"] in recent_new_ids
+                tag = "🕐 最近" if is_recent else f"权重:{score:.2f}"
+                dynamic_results.append(f"[{tag}] [bucket_id:{b['id']}] {summary}")
                 token_budget -= summary_tokens
             except Exception as e:
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
@@ -1084,11 +1206,12 @@ async def trace(
     tags: str = "",
     resolved: int = -1,
     pinned: int = -1,
+    pin_level: int = -1,
     digested: int = -1,
     content: str = "",
     delete: bool = False,
 ) -> str:
-    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
+    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,pin_level=1必出/2场景触发/3背景轮换(仅pinned桶),digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
 
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
@@ -1124,6 +1247,10 @@ async def trace(
         updates["pinned"] = bool(pinned)
         if pinned == 1:
             updates["importance"] = 10  # pinned → lock importance
+            if pin_level not in (1, 2, 3):
+                updates["pin_level"] = 2  # default L2 if pinning without specifying level
+    if pin_level in (1, 2, 3):
+        updates["pin_level"] = pin_level
     if digested in (0, 1):
         updates["digested"] = bool(digested)
     if content:
