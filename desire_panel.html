@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>内心面板 · desire v1.0</title>
+<title>内心面板 · desire v2.0</title>
 <style>
   :root{
     --bg:#141413; --card:#1e1e1c; --line:#2e2e2b; --txt:#e8e6e1; --dim:#8a8780;
@@ -25,15 +25,24 @@
   .gate{opacity:.75}
   .gate .fill{background:repeating-linear-gradient(45deg,#5a5a55 0 6px,#44443f 6px 12px)!important}
   .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
-  .chip{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--dim)}
+  .chip{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--dim);cursor:default;position:relative}
   .chip.fix{border-color:#9a6b3f;color:#d8a06a;font-weight:600}
+  /* tooltip */
+  .chip .tip{display:none;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
+    background:#2a2a27;border:1px solid var(--line);border-radius:8px;padding:6px 10px;
+    font-size:11px;color:var(--dim);white-space:nowrap;z-index:10;pointer-events:none;
+    box-shadow:0 2px 8px rgba(0,0,0,.4)}
+  .chip:hover .tip{display:block}
+  .heartbeat{display:inline-flex;align-items:center;gap:6px}
+  .heartbeat .dot{width:8px;height:8px;border-radius:50%;background:#a3be8c;animation:pulse 2s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
   .meta{color:var(--dim);font-size:12px;margin-top:14px;line-height:1.8}
   .err{color:#d08770;font-size:14px;margin-top:20px;line-height:1.7}
   a{color:#8fb3d9}
 </style>
 </head>
 <body>
-  <h1>内心面板 <span style="color:var(--dim);font-weight:400">· desire v1.0 · 仅状态层(玻璃罩裸跳)</span></h1>
+  <h1>内心面板 <span id="ver" style="color:var(--dim);font-weight:400">· 载入中…</span></h1>
   <div class="sub" id="updated">载入中…</div>
 
   <div class="card">
@@ -47,6 +56,10 @@
     <div class="chips" id="thoughts"></div>
   </div>
 
+  <div class="card" id="heartbeat_card" style="display:none">
+    <div class="heartbeat" id="heartbeat"></div>
+  </div>
+
   <div class="meta" id="meta"></div>
   <div class="err" id="err"></div>
 
@@ -56,6 +69,12 @@ const COLORS = {
   social:"#b48ead", libido:"#bf616a", stress:"#d08770", fatigue:"#5a5a55"
 };
 const ORDER = ["attachment","curiosity","reflection","duty","social","libido","stress","fatigue"];
+
+function fmtDate(ts){
+  if(!ts)return "?";
+  const d=new Date(ts*1000);
+  return `${(d.getMonth()+1).toString().padStart(2,'0')}-${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+}
 
 async function refresh(){
   const err = document.getElementById("err");
@@ -67,6 +86,10 @@ async function refresh(){
     }
     const s = await r.json();
     err.textContent = "";
+
+    // version from engine field
+    const engineStr = s.engine || "desire";
+    document.getElementById("ver").textContent = "· " + engineStr.split("(")[0].trim();
 
     const it = s.intent || {};
     document.getElementById("intent").innerHTML =
@@ -85,17 +108,41 @@ async function refresh(){
       </div>`;
     }).join("");
 
+    // thoughts with rich tooltip
     const th = s.thoughts||[];
     document.getElementById("tcount").textContent = `${th.length} 条 `;
     document.getElementById("thoughts").innerHTML = th.length
-      ? th.map(t=>`<span class="chip ${t.kind==="fixation"?"fix":""}" title="${t.drive} · ${t.strength.toFixed(2)}">${t.text} · ${t.strength.toFixed(2)}</span>`).join("")
+      ? th.map(t=>{
+          const born = fmtDate(t.born_at);
+          const driveLabel = lb[t.drive]||t.drive;
+          const kind = t.kind==="fixation"?"执念":"闪念";
+          return `<span class="chip ${t.kind==="fixation"?"fix":""}">
+            ${t.text} · ${t.strength.toFixed(2)}
+            <span class="tip">${kind} · ${driveLabel} · 出生 ${born} · 强度 ${t.strength.toFixed(3)}</span>
+          </span>`;
+        }).join("")
       : `<span class="chip">脑子里很安静</span>`;
+
+    // heartbeat info (v2)
+    const hbCard = document.getElementById("heartbeat_card");
+    const hbMin = s.heartbeat_interval_min;
+    const wc24 = s.wildcard_24h ?? 0;
+    const stagH = s.stagnant_hours ?? 0;
+    if(hbMin != null){
+      hbCard.style.display = "";
+      let hbText = `<span class="dot"></span> 心跳间隔 ${hbMin} 分钟`;
+      if(wc24 > 0) hbText += ` · wildcard今日 ${wc24}/${s.wildcard_max||2} 次`;
+      if(stagH > 0.1) hbText += ` · 僵持 ${stagH.toFixed(1)} 小时`;
+      document.getElementById("heartbeat").innerHTML = hbText;
+    } else {
+      hbCard.style.display = "none";
+    }
 
     document.getElementById("meta").innerHTML =
       `距上次互动 ${s.idle_hours} 小时 · 累计 ${s.tick_count} 拍 · ` +
       `闸:DESIRE_ENGINE=${s.gates?.DESIRE_ENGINE?"开(只读)":"关"} / DESIRE_DRIVEN=${s.gates?.DESIRE_DRIVEN?"开":"关(v1.0焊死)"}`;
     document.getElementById("updated").textContent =
-      `${s.engine} · 刷新于 ${new Date().toLocaleTimeString()} · 每30秒自动刷新`;
+      `${engineStr} · 刷新于 ${new Date().toLocaleTimeString()} · 每30秒自动刷新`;
   }catch(e){
     err.textContent = "拉取失败:" + e;
   }
