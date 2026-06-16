@@ -56,7 +56,8 @@ from dehydrator import Dehydrator
 from decay_engine import DecayEngine
 from embedding_engine import EmbeddingEngine
 from import_memory import ImportEngine
-from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx
+from utils import load_config, setup_logging, strip_wikilinks, count_tokens_approx, sanitize_name
+import frontmatter
 
 # --- Load config & init logging / 加载配置 & 初始化日志 ---
 config = load_config()
@@ -2369,13 +2370,20 @@ async def api_export_all(request):
         # Create in-memory zip
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            # Export each bucket as a JSON file
+            # Export each bucket as a JSON file (with embedding if available)
             for b in all_buckets:
                 bucket_data = {
                     "id": b["id"],
                     "metadata": b.get("metadata", {}),
                     "content": b.get("content", ""),
                 }
+                # Include embedding vector if available
+                try:
+                    emb = await embedding_engine.get_embedding(b["id"])
+                    if emb:
+                        bucket_data["embedding"] = emb
+                except Exception:
+                    pass  # Skip embedding on error, bucket data still exported
                 bucket_type = b.get("metadata", {}).get("type", "dynamic")
                 filename = f"{bucket_type}/{b['id']}.json"
                 zf.writestr(
@@ -2387,7 +2395,8 @@ async def api_export_all(request):
             manifest = {
                 "exported_at": datetime.datetime.now().isoformat(),
                 "total_buckets": len(all_buckets),
-                "version": "1.3.0",
+                "version": "1.4.1",
+                "includes_embeddings": True,
                 "counts_by_type": {},
             }
             for b in all_buckets:
@@ -2412,6 +2421,189 @@ async def api_export_all(request):
     except Exception as e:
         logger.error(f"Export failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================
+# /api/import-restore — 一键恢复（从备份 zip 还原桶 + embedding）
+# Tristen 浏览器上传 zip 即可恢复
+# =============================================================
+@mcp.custom_route("/api/import-restore", methods=["GET", "POST"])
+async def api_import_restore(request):
+    """
+    GET  → 返回上传页面
+    POST → 接收 zip，解析 JSON，写回桶文件 + embedding
+    """
+    from starlette.responses import Response, HTMLResponse, JSONResponse
+    import io
+    import zipfile
+
+    err = _require_auth(request)
+    if err:
+        return err
+
+    # --- GET: serve upload page ---
+    if request.method == "GET":
+        html = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Ombre Brain - Restore</title>
+<style>
+body { font-family: system-ui; max-width: 600px; margin: 60px auto; padding: 20px; background: #1a1a1a; color: #e0e0e0; }
+h1 { font-size: 1.4em; color: #c9a96e; }
+.warn { background: #3a2a1a; border: 1px solid #c9a96e; border-radius: 8px; padding: 16px; margin: 20px 0; font-size: 0.9em; line-height: 1.6; }
+input[type=file] { margin: 20px 0; }
+button { background: #c9a96e; color: #1a1a1a; border: none; padding: 10px 24px; border-radius: 6px; cursor: pointer; font-weight: bold; }
+button:hover { background: #d4b87a; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+#result { margin-top: 20px; padding: 16px; border-radius: 8px; display: none; white-space: pre-wrap; font-family: monospace; font-size: 0.85em; line-height: 1.5; }
+.ok { background: #1a2a1a; border: 1px solid #4a8; }
+.err { background: #2a1a1a; border: 1px solid #a44; }
+</style></head><body>
+<h1>🧠 Ombre Brain — Restore from Backup</h1>
+<div class="warn">
+⚠ This will <b>add or overwrite</b> buckets from the zip into the current storage.<br>
+Existing buckets with the same ID will be overwritten.<br>
+Buckets not in the zip will be left untouched.
+</div>
+<input type="file" id="f" accept=".zip">
+<br><button id="btn" onclick="upload()">Upload & Restore</button>
+<div id="result"></div>
+<script>
+async function upload() {
+  const f = document.getElementById('f').files[0];
+  if (!f) { alert('Pick a zip file first'); return; }
+  const btn = document.getElementById('btn');
+  const res = document.getElementById('result');
+  btn.disabled = true; btn.textContent = 'Restoring...';
+  res.style.display = 'none';
+  try {
+    const fd = new FormData(); fd.append('file', f);
+    const r = await fetch('/api/import-restore', { method: 'POST', body: fd });
+    const j = await r.json();
+    res.style.display = 'block';
+    if (r.ok) { res.className = 'ok'; res.textContent = JSON.stringify(j, null, 2); }
+    else { res.className = 'err'; res.textContent = 'Error: ' + JSON.stringify(j, null, 2); }
+  } catch(e) { res.style.display = 'block'; res.className = 'err'; res.textContent = 'Network error: ' + e; }
+  btn.disabled = false; btn.textContent = 'Upload & Restore';
+}
+</script></body></html>"""
+        return HTMLResponse(html)
+
+    # --- POST: restore from zip ---
+    try:
+        form = await request.form()
+        upload_file = form.get("file")
+        if not upload_file:
+            return JSONResponse({"error": "No file uploaded"}, status_code=400)
+
+        zip_bytes = await upload_file.read()
+        zip_buffer = io.BytesIO(zip_bytes)
+
+        if not zipfile.is_zipfile(zip_buffer):
+            return JSONResponse({"error": "Not a valid zip file"}, status_code=400)
+
+        zip_buffer.seek(0)
+        zf = zipfile.ZipFile(zip_buffer, "r")
+
+        success = 0
+        failed = 0
+        skipped = 0
+        embeddings_restored = 0
+        errors = []
+
+        for name in zf.namelist():
+            if name == "manifest.json" or not name.endswith(".json"):
+                continue
+
+            try:
+                raw = zf.read(name)
+                data = _json_lib.loads(raw.decode("utf-8"))
+
+                bucket_id = data.get("id")
+                metadata = data.get("metadata", {})
+                content = data.get("content", "")
+                emb_vector = data.get("embedding")
+
+                if not bucket_id or not content.strip():
+                    skipped += 1
+                    continue
+
+                bucket_type = metadata.get("type", "dynamic")
+                pinned = metadata.get("pinned", False)
+
+                # --- Determine target directory ---
+                if bucket_type == "permanent" or pinned:
+                    type_dir = bucket_mgr.permanent_dir
+                elif bucket_type == "feel":
+                    type_dir = bucket_mgr.feel_dir
+                elif bucket_type == "note":
+                    type_dir = bucket_mgr.note_dir
+                elif bucket_type == "archive":
+                    type_dir = bucket_mgr.archive_dir
+                else:
+                    type_dir = bucket_mgr.dynamic_dir
+
+                # --- Determine subdirectory ---
+                domain = metadata.get("domain", [])
+                if bucket_type == "feel":
+                    primary_domain = "沉淀物"
+                elif bucket_type == "note":
+                    primary_domain = "鸿湍笔记"
+                else:
+                    primary_domain = sanitize_name(domain[0]) if domain else "未分类"
+
+                target_dir = os.path.join(type_dir, primary_domain)
+                os.makedirs(target_dir, exist_ok=True)
+
+                # --- Build markdown file ---
+                post = frontmatter.Post(content, **metadata)
+                bucket_name = metadata.get("name", bucket_id)
+                if bucket_name and bucket_name != bucket_id:
+                    filename = f"{sanitize_name(bucket_name)}_{bucket_id}.md"
+                else:
+                    filename = f"{bucket_id}.md"
+
+                # --- Check if file already exists (any location) ---
+                existing = bucket_mgr._find_bucket_file(bucket_id)
+                if existing:
+                    file_path = existing  # overwrite in place
+                else:
+                    file_path = os.path.join(target_dir, filename)
+
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(frontmatter.dumps(post))
+
+                # --- Restore embedding if present ---
+                if emb_vector and embedding_engine and embedding_engine.enabled:
+                    try:
+                        embedding_engine._store_embedding(bucket_id, emb_vector)
+                        embeddings_restored += 1
+                    except Exception as emb_err:
+                        logger.warning(f"Embedding restore failed for {bucket_id}: {emb_err}")
+
+                success += 1
+
+            except Exception as e:
+                failed += 1
+                errors.append(f"{name}: {str(e)[:80]}")
+
+        zf.close()
+
+        result = {
+            "status": "ok",
+            "restored": success,
+            "failed": failed,
+            "skipped": skipped,
+            "embeddings_restored": embeddings_restored,
+        }
+        if errors:
+            result["errors"] = errors[:20]  # cap error list
+
+        logger.info(f"Import-restore complete: {success} restored, {failed} failed, {skipped} skipped, {embeddings_restored} embeddings")
+        return JSONResponse(result)
+
+    except Exception as e:
+        logger.error(f"Import-restore failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 
 # --- Entry point / 启动入口 ---
 if __name__ == "__main__":
