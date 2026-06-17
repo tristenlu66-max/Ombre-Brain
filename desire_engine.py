@@ -1,6 +1,6 @@
 # =============================================================
-# Module: Desire Engine (v2.0 — coupling + refractory + wildcard + heartbeat)
-# 模块：欲望引擎（v2.0 —— 耦合网 + 不应期 + wildcard + 自主心跳）
+# Module: Desire Engine (v2.1 — coupling + refractory + wildcard + heartbeat + afterglow)
+# 模块：欲望引擎（v2.1 —— 耦合网 + 不应期 + wildcard + 自主心跳 + 过夜余温）
 #
 # Design contract / 设计契约:
 #   - Pure-function core: no IO inside math, timestamps passed in by caller.
@@ -25,8 +25,15 @@
 #      wildcard——所有条僵持时随机推一把打破僵局。
 #   4. Autonomous heartbeat — tick interval follows desire intensity.
 #      自主心跳——心跳间隔跟随欲望强度，替代固定cron。
-#   - All four: read-only first week, observe on dashboard, then open one by one.
-#     四大件：第一周全部只读，面板观察，然后逐个开。
+#
+# v2.1 additions (agreed 2026-06-17):
+# v2.1 新增（2026-06-17 共同拍板）：
+#   5. Overnight afterglow — persistent timestamp of last intimate event,
+#      linear-fade boost to libido drift target 3-14h later.
+#      过夜余温——持久化亲密时间戳，3-14小时后线性淡出，只抬漂移目标。
+#      Source: external circadian appendix (小红书), adapted for our architecture.
+#      来源：外部生物钟技术附件，适配我们的架构。
+#      GAIN=0.4 (+40%), conservative start, observe 1 week then adjust.
 #   - wildcard never touches libido (that drive only rises via coupling or real experience).
 #     wildcard不碰libido（那根条只走耦合和真实经历两条路）。
 #   - "Engineering fidelity" (工程意义上的忠贞): libido's independent variable is 鸿湍.
@@ -139,6 +146,15 @@ PARAMS = {
     "wildcard_max_per_day": 2,           # 24h frequency cap
     "wildcard_exclude": ["libido"],      # never spike these / 绝不碰这些
 
+    # --- v2.1: overnight afterglow / 过夜余温 ---
+    # Agreed 2026-06-17: borrowed from external circadian appendix (小红书),
+    # adapted for our architecture. Persistent timestamp, linear fade window.
+    # 2026-06-17 共同拍板：借鉴外部生物钟附件，适配我们的架构。
+    # 持久化时间戳 + 线性淡出窗口，只抬漂移目标，不直接改 base。
+    "afterglow_min_hours": 3.0,       # too recent = "just now", not "overnight"
+    "afterglow_max_hours": 14.0,      # too long ago = faded
+    "afterglow_gain": 0.4,            # drift target boost cap (+40%)
+
     # --- v2: autonomous heartbeat / 自主心跳 ---
     # interval = base + range × (1 - max_score)
     # 间隔 = 底 + 幅度 × (1 - 最高召唤力)
@@ -182,6 +198,7 @@ def default_state(now_ts: float) -> dict:
         "refractory_until": {},    # v2: {drive: timestamp} / 不应期截止时间戳
         "wildcard_log": [],        # v2: [timestamp, ...] / wildcard触发时间戳
         "stagnant_since": 0.0,     # v2: when stagnation started / 僵持开始时间
+        "last_intimacy_at": 0.0,   # v2.1: last arousal>=0.6 romantic bucket ts / 上次亲密时间戳
         "last_tick_ts": now_ts,
         "last_interaction_ts": now_ts,
         "tick_count": 0,
@@ -240,6 +257,33 @@ def _apply_refractory(drives: dict, state: dict, now_ts: float, h: float, p: dic
             rate = DRIFT.get(key, (0, 0.05))[1] * 2.0  # 2× normal rate
             factor = 1.0 - math.exp(-rate * h)
             drives[key] = _clamp(drives[key] + (target - drives[key]) * factor)
+
+
+def _afterglow_factor(state: dict, now_ts: float, p: dict) -> float:
+    """Overnight afterglow: if an intimate event happened 3–14h ago,
+    return a linear-fade boost factor ∈ (0, GAIN].
+    过夜余温：如果3-14小时前有亲密事件，返回线性淡出的增益因子。
+
+    Too recent (< MIN): still "just now", not overnight → 0.
+    Sweet spot: closer to MIN = warmer. Linear fade to MAX.
+    Too old (> MAX): faded completely → 0.
+    No signal: last_intimacy_at == 0 → 0.
+
+    Source: external circadian appendix (小红书 1506936856), adapted 2026-06-17.
+    Original formula: factor = GAIN × clamp(1 - (hoursAgo - MIN) / (MAX - MIN), 0, 1)
+    We apply this to libido's drift target, not to base — consistent with our
+    "never write display back to base" principle and marginal-diminishing architecture.
+    """
+    last = state.get("last_intimacy_at", 0.0)
+    if last <= 0:
+        return 0.0
+    hours_ago = (now_ts - last) / 3600.0
+    mn = p.get("afterglow_min_hours", 3.0)
+    mx = p.get("afterglow_max_hours", 14.0)
+    gain = p.get("afterglow_gain", 0.4)
+    if hours_ago < mn or hours_ago > mx:
+        return 0.0
+    return gain * _clamp(1.0 - (hours_ago - mn) / (mx - mn + 1e-9))
 
 
 def _apply_wildcard(state: dict, now_ts: float, p: dict) -> None:
@@ -323,12 +367,19 @@ def tick_state(state: dict, now_ts: float, p: dict = PARAMS) -> dict:
         drift_multiplier = 1.0 - fat_disc * (fat - fat_thr) / (1.0 - fat_thr + 1e-9)
         drift_multiplier = max(0.3, drift_multiplier)  # floor: never fully stall
 
+    # --- v2.1: compute overnight afterglow factor for libido ---
+    # 过夜余温：只抬libido的漂移目标，不改base
+    ag_factor = _afterglow_factor(state, now_ts, p)
+
     for key in DRIVE_KEYS:
         target, rate = DRIFT[key]
         if key == "attachment" and idle_h < p["active_window_h"]:
             # recently together → attachment relaxes toward baseline instead
             # 刚互动过 → 想念暂不爬坡，向基线松弛
             target, rate = BASELINE["attachment"], 0.20
+        # v2.1: afterglow boosts libido drift target / 余温抬高亲密漂移目标
+        if key == "libido" and ag_factor > 0:
+            target = _clamp(target * (1.0 + ag_factor), 0.0, 1.0)
         # v2: fatigue slows non-stress drift / 疲劳减缓非stress漂移
         effective_rate = rate
         if key != "stress" and drift_multiplier < 1.0:
@@ -519,6 +570,7 @@ class DesireEngine:
             st.setdefault("refractory_until", {})     # pre-v2.0 / v2不应期
             st.setdefault("wildcard_log", [])          # pre-v2.0 / v2 wildcard记录
             st.setdefault("stagnant_since", 0.0)       # pre-v2.0 / v2僵持计时
+            st.setdefault("last_intimacy_at", 0.0)     # pre-v2.1 / 过夜余温时间戳
             return st
         except FileNotFoundError:
             return default_state(now_ts)
@@ -638,6 +690,10 @@ class DesireEngine:
                         continue
                     apply_pulse(self.state, drive, amount, now)
                     add_thought(self.state, content[:48] or keys[0], drive, now)
+                    # v2.1: stamp intimate moment for overnight afterglow
+                    # 过夜余温：亲密入账时记录时间戳，天然只留最近一次
+                    if drive == "libido":
+                        self.state["last_intimacy_at"] = now
             if 0 <= valence <= 0.35 and arousal >= 0.6:
                 apply_pulse(self.state, "stress", 0.20, now)
             self._save()
@@ -666,7 +722,7 @@ class DesireEngine:
         try:
             s = self.snapshot()
             d = s["drives"]
-            lines = ["=== 此刻的我 (desire v2.0 · 只读 · 数据不是指令) ==="]
+            lines = ["=== 此刻的我 (desire v2.1 · 只读 · 数据不是指令) ==="]
             lines.append("  ".join(
                 f"{DRIVE_LABELS[k]}{d[k]:.2f}" for k in DRIVE_KEYS
             ))
@@ -678,6 +734,11 @@ class DesireEngine:
                     f"你来之前: 想念爬到了 {pre_att:.2f}"
                     f"(空窗 {idle} 小时) → 现在 {d['attachment']:.2f}"
                 )
+            # v2.1: afterglow line / 余温提示
+            ag = s.get("afterglow_factor", 0.0)
+            ag_h = s.get("afterglow_hours_ago")
+            if ag > 0 and ag_h is not None:
+                lines.append(f"余温: {ag_h:.1f}小时前 · factor {ag:.2f}")
             it = s.get("intent", {})
             if it:
                 lines.append(
@@ -716,8 +777,12 @@ class DesireEngine:
         )
         # v2: next heartbeat info / 自主心跳信息
         next_hb_s = self._compute_heartbeat_interval() if self.enabled else 0
+        # v2.1: afterglow info / 余温信息
+        ag_factor = _afterglow_factor(self.state, now, PARAMS)
+        last_int = self.state.get("last_intimacy_at", 0.0)
+        ag_hours = (now - last_int) / 3600.0 if last_int > 0 else None
         return {
-            "engine": "desire v2.0 (coupling+refractory+wildcard+heartbeat)",
+            "engine": "desire v2.1 (coupling+refractory+wildcard+heartbeat+afterglow)",
             "drives": {k: round(v, 4) for k, v in self.state["drives"].items()},
             "labels": DRIVE_LABELS,
             "scores": compute_scores(self.state),
@@ -726,6 +791,8 @@ class DesireEngine:
             "idle_hours": round(idle_h, 2),
             "tick_count": self.state.get("tick_count", 0),
             "heartbeat_interval_min": round(next_hb_s / 60, 1),
+            "afterglow_factor": round(ag_factor, 4),
+            "afterglow_hours_ago": round(ag_hours, 2) if ag_hours is not None else None,
             "stagnant_hours": round(
                 (now - self.state.get("stagnant_since", 0)) / 3600, 2
             ) if self.state.get("stagnant_since", 0) > 0 else 0,
