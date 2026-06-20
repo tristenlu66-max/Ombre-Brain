@@ -199,7 +199,7 @@ async def _exec_generate_message(intent: dict, memories: str) -> str:
                 },
                 json={
                     "model": TELEGRAM_LLM_MODEL,
-                    "max_tokens": 200,
+                    "max_tokens": 800,
                     "temperature": 0.85,
                     "messages": [
                         {"role": "system", "content": system_prompt},
@@ -208,7 +208,10 @@ async def _exec_generate_message(intent: dict, memories: str) -> str:
                 },
             )
             data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            logger.info(f"LLM raw keys / LLM返回字段: {list(data.get('choices', [{}])[0].get('message', {}).keys())}")
+            msg = data["choices"][0]["message"]
+            text = msg.get("content") or msg.get("reasoning_content") or ""
+            return text.strip()
     except Exception as e:
         logger.warning(f"Exec LLM generation failed / LLM生成失败: {e}")
         return ""
