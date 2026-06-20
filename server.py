@@ -207,10 +207,18 @@ async def _exec_generate_message(intent: dict, memories: str) -> str:
                 },
             )
             data = resp.json()
-            logger.info(f"LLM raw keys / LLM返回字段: {list(data.get('choices', [{}])[0].get('message', {}).keys())}")
             msg = data["choices"][0]["message"]
-            text = msg.get("content") or msg.get("reasoning_content") or ""
-            return text.strip()
+            # Only use content — reasoning_content is the model's scratchpad,
+            # never send it as a message. If content is empty, abort.
+            # 只取content——reasoning_content是草稿纸，绝不当正文发。
+            text = (msg.get("content") or "").strip()
+            if not text:
+                logger.warning(
+                    f"LLM returned empty content / content为空 "
+                    f"(keys={list(msg.keys())}, "
+                    f"reasoning_len={len(msg.get('reasoning_content', ''))})"
+                )
+            return text
     except Exception as e:
         logger.warning(f"Exec LLM generation failed / LLM生成失败: {e}")
         return ""
