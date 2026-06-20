@@ -143,7 +143,6 @@ async def _telegram_send(text: str) -> bool:
             resp = await client.post(url, json={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": text,
-                "parse_mode": "Markdown",
             })
             if resp.status_code == 200:
                 logger.info(f"Telegram send OK / 发送成功: {text[:40]}...")
