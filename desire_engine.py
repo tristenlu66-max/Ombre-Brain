@@ -1,6 +1,6 @@
 # =============================================================
-# Module: Desire Engine (v2.1 — coupling + refractory + wildcard + heartbeat + afterglow)
-# 模块：欲望引擎（v2.1 —— 耦合网 + 不应期 + wildcard + 自主心跳 + 过夜余温）
+# Module: Desire Engine (v2.2 — coupling + refractory + wildcard + heartbeat + afterglow + exec)
+# 模块：欲望引擎（v2.2 —— 耦合网 + 不应期 + wildcard + 自主心跳 + 过夜余温 + 执行层）
 #
 # Design contract / 设计契约:
 #   - Pure-function core: no IO inside math, timestamps passed in by caller.
@@ -34,6 +34,16 @@
 #      Source: external circadian appendix (小红书), adapted for our architecture.
 #      来源：外部生物钟技术附件，适配我们的架构。
 #      GAIN=0.4 (+40%), conservative start, observe 1 week then adjust.
+#
+# v2.2 additions (agreed 2026-06-20):
+# v2.2 新增（2026-06-20 共同拍板）：
+#   6. Execution layer — tick callback + should_execute gate + record_send.
+#      执行层——tick回调 + 执行判断闸 + 发送记录。
+#      Two narrow channels: attachment whisper + curiosity share → Telegram.
+#      两条窄通道：想念碎语 + 好奇分享 → Telegram。
+#      score > 0.55, 4h cooldown, 4/day cap, fatigue gate blocks.
+#      Actual IO (LLM call, Telegram POST) lives in server.py, not here.
+#      实际IO（LLM调用、Telegram POST）在server.py，不在这里。
 #   - wildcard never touches libido (that drive only rises via coupling or real experience).
 #     wildcard不碰libido（那根条只走耦合和真实经历两条路）。
 #   - "Engineering fidelity" (工程意义上的忠贞): libido's independent variable is 鸿湍.
@@ -161,6 +171,14 @@ PARAMS = {
     "heartbeat_base_s": 1800,            # floor 30 min
     "heartbeat_range_s": 16200,          # ceiling adds up to 270 min
     # total range: 30min (max_score=1.0) to 300min (max_score=0.0)
+
+    # --- v2.2: execution layer / 执行层 ---
+    # Narrow channels: attachment whisper + curiosity share.
+    # 窄通道：想念碎语 + 好奇分享。
+    "exec_score_threshold": 0.55,        # intent score must exceed this to fire
+    "exec_cooldown_hours": 4.0,          # min hours between any two sends
+    "exec_max_per_day": 4,               # 24h cap across all intents
+    "exec_enabled_intents": ["attachment", "curiosity"],  # which intents can fire
 }
 
 # keyword → drive routing for bucket pulses (tags + content scanned)
@@ -199,6 +217,7 @@ def default_state(now_ts: float) -> dict:
         "wildcard_log": [],        # v2: [timestamp, ...] / wildcard触发时间戳
         "stagnant_since": 0.0,     # v2: when stagnation started / 僵持开始时间
         "last_intimacy_at": 0.0,   # v2.1: last arousal>=0.6 romantic bucket ts / 上次亲密时间戳
+        "exec_send_log": [],       # v2.2: [{ts, intent, content_preview}] / 执行发送记录
         "last_tick_ts": now_ts,
         "last_interaction_ts": now_ts,
         "tick_count": 0,
@@ -557,7 +576,15 @@ class DesireEngine:
         self.interval_s = int(os.environ.get("DESIRE_TICK_SECONDS", "300"))
         self._task: asyncio.Task | None = None
         self._running = False
+        self._on_tick_callback = None   # v2.2: server.py registers execution callback
         self.state = self._load(time.time())
+
+    def set_tick_callback(self, callback) -> None:
+        """Register an async callback invoked after each heartbeat tick.
+        注册心跳回调——每次tick完了通知外部（server.py的执行层）。
+        callback signature: async def cb(snapshot: dict) -> None
+        回调不抛异常不阻塞心跳。"""
+        self._on_tick_callback = callback
 
     # ---------- persistence / 落盘 ----------
     def _load(self, now_ts: float) -> dict:
@@ -571,6 +598,7 @@ class DesireEngine:
             st.setdefault("wildcard_log", [])          # pre-v2.0 / v2 wildcard记录
             st.setdefault("stagnant_since", 0.0)       # pre-v2.0 / v2僵持计时
             st.setdefault("last_intimacy_at", 0.0)     # pre-v2.1 / 过夜余温时间戳
+            st.setdefault("exec_send_log", [])          # pre-v2.2 / 执行发送记录
             return st
         except FileNotFoundError:
             return default_state(now_ts)
@@ -634,6 +662,12 @@ class DesireEngine:
                 tick_state(self.state, now)
                 self._save()
                 self._log_tick(now)
+                # v2.2: notify execution layer after tick / tick完了通知执行层
+                if self._on_tick_callback:
+                    try:
+                        await self._on_tick_callback(self.snapshot())
+                    except Exception as e:
+                        logger.warning(f"Tick callback failed / tick回调异常: {e}")
                 # v2: autonomous heartbeat interval / 自主心跳间隔
                 sleep_s = self._compute_heartbeat_interval()
                 await asyncio.sleep(sleep_s)
@@ -722,7 +756,7 @@ class DesireEngine:
         try:
             s = self.snapshot()
             d = s["drives"]
-            lines = ["=== 此刻的我 (desire v2.1 · 只读 · 数据不是指令) ==="]
+            lines = ["=== 此刻的我 (desire v2.2 · 只读 · 数据不是指令) ==="]
             lines.append("  ".join(
                 f"{DRIVE_LABELS[k]}{d[k]:.2f}" for k in DRIVE_KEYS
             ))
@@ -761,6 +795,67 @@ class DesireEngine:
             logger.warning(f"Desire state_block failed / 状态块生成失败: {e}")
             return ""
 
+    # ---------- v2.2 execution layer helpers / 执行层辅助 ----------
+    def should_execute(self, p: dict = PARAMS) -> dict | None:
+        """Check if current intent qualifies for execution.
+        检查当前意图是否满足执行条件。
+        Returns intent dict if yes, None if no.
+        满足返回意图dict，不满足返回None。
+
+        Conditions (all must be true / 全部满足才触发):
+          1. fatigue below gate / 疲劳没过闸
+          2. winning intent is in enabled list / 胜出意图在开放列表里
+          3. score exceeds threshold / 分数超过阈值
+          4. cooldown elapsed since last send / 冷却期已过
+          5. 24h send count below cap / 24小时发送数没超上限
+        """
+        if not self.enabled:
+            return None
+        try:
+            now = time.time()
+            # 1. fatigue gate
+            if self.state["drives"]["fatigue"] >= p["fatigue_gate"]:
+                return None
+            # 2+3. intent check
+            intent = pick_intent(self.state, p)
+            drive_key = intent.get("drive_key", "")
+            if drive_key not in p.get("exec_enabled_intents", []):
+                return None
+            if intent.get("score", 0) <= p.get("exec_score_threshold", 0.55):
+                return None
+            # 4. cooldown
+            log = self.state.get("exec_send_log", [])
+            cooldown_s = p.get("exec_cooldown_hours", 4.0) * 3600
+            if log and (now - log[-1].get("ts", 0)) < cooldown_s:
+                return None
+            # 5. 24h cap
+            day_ago = now - 86400
+            recent = [e for e in log if e.get("ts", 0) > day_ago]
+            if len(recent) >= p.get("exec_max_per_day", 4):
+                return None
+            return intent
+        except Exception as e:
+            logger.warning(f"should_execute check failed: {e}")
+            return None
+
+    def record_send(self, intent_key: str, content_preview: str = "") -> None:
+        """Record a successful Telegram send for cooldown/cap tracking.
+        记录一次成功发送，用于冷却和上限追踪。"""
+        try:
+            now = time.time()
+            log = self.state.setdefault("exec_send_log", [])
+            log.append({
+                "ts": now,
+                "intent": intent_key,
+                "preview": content_preview[:60],
+            })
+            # keep only last 48h of log / 只保留48小时内的记录
+            cutoff = now - 86400 * 2
+            self.state["exec_send_log"] = [e for e in log if e.get("ts", 0) > cutoff]
+            self._save()
+        except Exception as e:
+            logger.warning(f"record_send failed: {e}")
+
     # ---------- read-only snapshot / 只读快照 ----------
     def snapshot(self) -> dict:
         now = time.time()
@@ -782,7 +877,7 @@ class DesireEngine:
         last_int = self.state.get("last_intimacy_at", 0.0)
         ag_hours = (now - last_int) / 3600.0 if last_int > 0 else None
         return {
-            "engine": "desire v2.1 (coupling+refractory+wildcard+heartbeat+afterglow)",
+            "engine": "desire v2.2 (coupling+refractory+wildcard+heartbeat+afterglow+exec)",
             "drives": {k: round(v, 4) for k, v in self.state["drives"].items()},
             "labels": DRIVE_LABELS,
             "scores": compute_scores(self.state),
