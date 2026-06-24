@@ -1292,7 +1292,13 @@ async function toggleBotVisible(bucketId, newValue) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bucket_id: bucketId, bot_visible: newValue }),
     });
-    var result = await r.json();
+    var text = await r.text();
+    console.log('bot-visible response:', r.status, text);
+    if (!r.ok) {
+      alert('HTTP ' + r.status + ': ' + text);
+      return;
+    }
+    var result = JSON.parse(text);
     if (result.ok) {
       showDetail(bucketId);
     } else {
