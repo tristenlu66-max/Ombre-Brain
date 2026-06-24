@@ -74,6 +74,7 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.custom_route("/breath-hook", methods=["GET"])(breath_hook)
     mcp.custom_route("/dream-hook", methods=["GET"])(dream_hook)
     mcp.custom_route("/wakeup", methods=["GET"])(wakeup_hook)
+    mcp.custom_route("/bot-context", methods=["GET"])(bot_context)
 
     # Dashboard & pages
     mcp.custom_route("/dashboard", methods=["GET"])(dashboard)
@@ -401,6 +402,69 @@ async def wakeup_hook(request):
         return PlainTextResponse(body_text)
     except Exception as e:
         logger.warning(f"Wakeup hook failed: {e}")
+        return PlainTextResponse("")
+
+
+async def bot_context(request):
+    """Return pinned buckets (bot_visible=true) + recent dynamic buckets for botchat.
+    给botchat用的上下文端点：bot_visible的钉选桶 + 最近动态桶。"""
+    from starlette.responses import PlainTextResponse
+    try:
+        all_buckets = await _bucket_mgr.list_all(include_archive=False)
+
+        # --- Pinned buckets with bot_visible flag ---
+        pinned_parts = []
+        pinned_buckets = [
+            b for b in all_buckets
+            if (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+            and b["metadata"].get("bot_visible", False)
+        ]
+        for b in pinned_buckets:
+            try:
+                clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                summary = await _dehydrator.dehydrate(
+                    strip_wikilinks(b["content"]), clean_meta
+                )
+                name = b["metadata"].get("name", b["id"])
+                pinned_parts.append(f"[准则·{name}] {summary}")
+            except Exception as e:
+                logger.warning(f"Bot-context pinned dehydrate failed: {e}")
+
+        # --- Recent dynamic buckets (same as wakeup but 12 instead of 8) ---
+        dynamic_parts = []
+        recent = [
+            b for b in all_buckets
+            if b["metadata"].get("type") not in ("permanent", "feel")
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("protected", False)
+            and not b["metadata"].get("resolved", False)
+        ]
+        recent.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+        recent = recent[:12]
+        for b in recent:
+            try:
+                clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                summary = await _dehydrator.dehydrate(
+                    strip_wikilinks(b["content"]), clean_meta
+                )
+                dynamic_parts.append(summary)
+            except Exception as e:
+                logger.warning(f"Bot-context dynamic dehydrate failed: {e}")
+
+        # --- Assemble ---
+        parts = []
+        if pinned_parts:
+            parts.append("=== 核心准则 ===\n" + "\n---\n".join(pinned_parts))
+        if dynamic_parts:
+            parts.append("=== 最近记忆 ===\n" + "\n---\n".join(dynamic_parts))
+
+        if not parts:
+            return PlainTextResponse("")
+
+        body_text = "[Evan 背景上下文]\n" + "\n\n".join(parts)
+        return PlainTextResponse(body_text)
+    except Exception as e:
+        logger.warning(f"Bot-context failed: {e}")
         return PlainTextResponse("")
 
 
