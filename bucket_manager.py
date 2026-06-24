@@ -300,6 +300,8 @@ class BucketManager:
             post["pin_level"] = max(1, min(3, int(kwargs["pin_level"])))
         if "model_valence" in kwargs:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
+        if "bot_visible" in kwargs:
+            post["bot_visible"] = bool(kwargs["bot_visible"])
 
         # --- Auto-refresh activation time / 自动刷新激活时间 ---
         post["last_active"] = now_iso()
