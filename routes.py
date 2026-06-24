@@ -83,6 +83,7 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     # Dashboard API
     mcp.custom_route("/api/buckets", methods=["GET"])(api_buckets)
     mcp.custom_route("/api/bucket/{bucket_id}", methods=["GET"])(api_bucket_detail)
+    mcp.custom_route("/api/bucket/{bucket_id}/bot-visible", methods=["POST"])(api_bucket_bot_visible)
     mcp.custom_route("/api/search", methods=["GET"])(api_search)
     mcp.custom_route("/api/network", methods=["GET"])(api_network)
     mcp.custom_route("/api/breath-debug", methods=["GET"])(api_breath_debug)
@@ -543,6 +544,28 @@ async def api_bucket_detail(request):
         "content": strip_wikilinks(bucket.get("content", "")),
         "score": _decay_engine.calculate_score(meta),
     })
+
+
+async def api_bucket_bot_visible(request):
+    """Toggle bot_visible flag on a pinned bucket. Dashboard用。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    bucket_id = request.path_params["bucket_id"]
+    bucket = await _bucket_mgr.get(bucket_id)
+    if not bucket:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    if not bucket["metadata"].get("pinned"):
+        return JSONResponse({"error": "只有钉选桶可以设置bot_visible"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    new_value = bool(body.get("bot_visible", False))
+    success = await _bucket_mgr.update(bucket_id, bot_visible=new_value)
+    if not success:
+        return JSONResponse({"error": "更新失败"}, status_code=500)
+    return JSONResponse({"ok": True, "bot_visible": new_value})
 
 
 async def api_search(request):
