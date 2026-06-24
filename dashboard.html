@@ -1287,19 +1287,14 @@ function closeDetail() {
 
 async function toggleBotVisible(bucketId, newValue) {
   try {
-    var res = await fetch(BASE + '/api/bucket/' + bucketId, { method: 'GET' });
-    var b = await res.json();
-    var meta = b.metadata || {};
-    // Use the trace-style update via a simple POST to a new endpoint
-    var body = { bot_visible: newValue };
-    var r = await fetch(BASE + '/api/bucket/' + bucketId + '/bot-visible', {
+    var r = await fetch(BASE + '/api/bot-visible', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ bucket_id: bucketId, bot_visible: newValue }),
     });
     var result = await r.json();
     if (result.ok) {
-      showDetail(bucketId);  // refresh panel
+      showDetail(bucketId);
     } else {
       alert('设置失败: ' + (result.error || '未知错误'));
     }
