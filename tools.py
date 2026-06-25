@@ -126,14 +126,14 @@ async def merge_or_create(
 # =============================================================
 async def breath(
     query: str = "",
-    max_tokens: int = 10000,
+    max_tokens: int = 12000,
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
     max_results: int = 20,
     importance_min: int = -1,
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认10000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认12000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
     # Snapshot BEFORE on_interaction: the overnight attachment climb must be
     # visible, not erased by the act of looking.
     pre = None
@@ -158,7 +158,7 @@ async def breath(
 
 async def _breath_core(
     query: str = "",
-    max_tokens: int = 10000,
+    max_tokens: int = 12000,
     domain: str = "",
     valence: float = -1,
     arousal: float = -1,
@@ -274,10 +274,15 @@ async def _breath_core(
         for b in l2_buckets:
             bucket_tags = {t.lower() for t in b["metadata"].get("tags", [])}
             bucket_domains = {d.lower() for d in b["metadata"].get("domain", [])}
-            if session_tags & (bucket_tags | bucket_domains):
-                l2_matched.append(b)
+            overlap = session_tags & (bucket_tags | bucket_domains)
+            if overlap:
+                l2_matched.append((len(overlap), b))
 
-        # Combine: L1 (all) + L2 (matched) + L3 (random 1-2)
+        # Sort by tag overlap density (descending), cap at 6
+        l2_matched.sort(key=lambda x: x[0], reverse=True)
+        l2_matched = [b for _, b in l2_matched[:6]]
+
+        # Combine: L1 (all) + L2 (matched, max 6) + L3 (random 1-2)
         surfacing_pinned = l1_buckets + l2_matched + l3_selected
 
         logger.info(
@@ -297,7 +302,26 @@ async def _breath_core(
             except Exception as e:
                 logger.warning(f"Failed to dehydrate pinned bucket: {e}")
 
-        token_budget = max_tokens - count_tokens_approx("\n---\n".join(pinned_results)) if pinned_results else max_tokens
+        # Cap pinned token usage: reserve 4000 tokens for recent/dynamic buckets
+        _RECENT_RESERVE = 4000
+        pinned_cap = max_tokens - _RECENT_RESERVE
+        pinned_text = "\n---\n".join(pinned_results) if pinned_results else ""
+        pinned_used = count_tokens_approx(pinned_text) if pinned_text else 0
+
+        if pinned_used > pinned_cap and pinned_results:
+            # Truncate pinned results to fit within cap (keep L1 first)
+            truncated = []
+            used = 0
+            for pr in pinned_results:
+                t = count_tokens_approx(pr)
+                if used + t > pinned_cap:
+                    break
+                truncated.append(pr)
+                used += t
+            pinned_results = truncated
+            pinned_used = used
+
+        token_budget = max_tokens - pinned_used
 
         # --- Dynamic bucket surfacing ---
         unresolved = [
@@ -309,7 +333,7 @@ async def _breath_core(
             and not b["metadata"].get("digested", False)
         ]
 
-        # Recent-first priority: buckets created within last 6 hours get priority
+        # Recent-first priority: buckets created within last 15 hours get priority
         import time as _time
         now = _time.time()
         recent_new = []
@@ -321,7 +345,7 @@ async def _breath_core(
                 if "T" in str(created_str):
                     ct = datetime.fromisoformat(str(created_str).replace("Z", "+00:00"))
                     age_hours = (datetime.now(timezone.utc) - ct).total_seconds() / 3600
-                    if age_hours < 6:
+                    if age_hours < 15:
                         recent_new.append(b)
                         continue
             except Exception:
