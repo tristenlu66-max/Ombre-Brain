@@ -335,22 +335,44 @@ async def _breath_core(
 
         # Recent-first priority: buckets created within last 15 hours get priority
         import time as _time
+        from datetime import datetime, timezone
         now = _time.time()
         recent_new = []
         rest_pool = []
-        for b in unresolved:
+
+        def _age_hours(b):
+            """Return age in hours for a bucket, or None if unparseable."""
             created_str = b["metadata"].get("created", "")
             try:
-                from datetime import datetime, timezone
                 if "T" in str(created_str):
                     ct = datetime.fromisoformat(str(created_str).replace("Z", "+00:00"))
-                    age_hours = (datetime.now(timezone.utc) - ct).total_seconds() / 3600
-                    if age_hours < 15:
-                        recent_new.append(b)
-                        continue
+                    return (datetime.now(timezone.utc) - ct).total_seconds() / 3600
             except Exception:
                 pass
-            rest_pool.append(b)
+            return None
+
+        for b in unresolved:
+            age = _age_hours(b)
+            if age is not None and age < 15:
+                recent_new.append(b)
+            else:
+                rest_pool.append(b)
+
+        # Also surface recent note buckets (within 15h window)
+        # Notes are excluded from the main unresolved pool to avoid
+        # polluting the decay-scored rest_pool, but recent ones should
+        # be visible alongside other fresh buckets.
+        recent_notes = [
+            b for b in all_buckets
+            if b["metadata"].get("type") == "note"
+            and not b["metadata"].get("resolved", False)
+            and not b["metadata"].get("pinned", False)
+            and not b["metadata"].get("digested", False)
+        ]
+        for b in recent_notes:
+            age = _age_hours(b)
+            if age is not None and age < 15:
+                recent_new.append(b)
 
         recent_new_ids = {b["id"] for b in recent_new}
 
