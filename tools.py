@@ -346,6 +346,9 @@ async def _breath_core(
             try:
                 if "T" in str(created_str):
                     ct = datetime.fromisoformat(str(created_str).replace("Z", "+00:00"))
+                    # If the timestamp has no timezone info (naive), assume UTC
+                    if ct.tzinfo is None:
+                        ct = ct.replace(tzinfo=timezone.utc)
                     return (datetime.now(timezone.utc) - ct).total_seconds() / 3600
             except Exception:
                 pass
@@ -1028,6 +1031,4 @@ async def dream() -> str:
         except Exception as e:
             logger.warning(f"Dream crystallization hint failed: {e}")
 
-    final_text = header + "\n---\n".join(parts) + connection_hint + crystal_hint
-    await _fire_webhook("dream", {"recent": len(recent), "chars": len(final_text)})
-    return final_text
+    
