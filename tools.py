@@ -376,6 +376,14 @@ async def _breath_core(
 
         recent_new_ids = {b["id"] for b in recent_new}
 
+        logger.info(
+            f"Breath recent debug: unresolved={len(unresolved)}, "
+            f"recent_new={len(recent_new)}, rest_pool={len(rest_pool)}, "
+            f"recent_note_candidates={len(recent_notes)}, "
+            f"token_budget={token_budget}, pinned_used={pinned_used}, "
+            f"recent_ids={[b['id'][:8] for b in recent_new]}"
+        )
+
         scored = sorted(rest_pool, key=lambda b: _decay_engine.calculate_score(b["metadata"]), reverse=True)
 
         # Assemble candidates: recent-first, then by score
