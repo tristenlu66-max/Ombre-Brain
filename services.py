@@ -9,6 +9,7 @@
 
 import os
 import logging
+import time
 import httpx
 
 logger = logging.getLogger("ombre_brain")
@@ -210,3 +211,220 @@ async def on_desire_tick(snapshot: dict, *, desire_engine, bucket_mgr,
         logger.warning(f"Exec satisfy failed / 满足回落失败: {e}")
 
     logger.info(f"Execution complete / 执行完成: {drive_key} → '{message[:40]}...'")
+
+
+# =============================================================
+# Wander execution layer / 漫步执行层
+# =============================================================
+from wander_engine import (
+    should_wander, pick_seed_bucket, pick_next_bucket,
+    build_first_step_prompt, build_step_prompt, is_dead_end,
+    format_wander_product, format_wander_summary,
+    default_wander_state, WANDER_SYSTEM_PROMPT, WANDER_PARAMS,
+)
+
+# Wander uses the same DeepSeek config as dehydration (from config.yaml).
+# Env var fallback: WANDER_LLM_BASE_URL / WANDER_LLM_API_KEY / WANDER_LLM_MODEL.
+# If neither is set, wander reuses the Telegram LLM vars.
+# 漫步复用脱水的 DeepSeek 配置；env var 可单独覆盖。
+WANDER_LLM_BASE_URL = (
+    os.environ.get("WANDER_LLM_BASE_URL", "").strip()
+    or TELEGRAM_LLM_BASE_URL
+    or "https://api.deepseek.com/v1"
+)
+WANDER_LLM_API_KEY = (
+    os.environ.get("WANDER_LLM_API_KEY", "").strip()
+    or TELEGRAM_LLM_API_KEY
+    or os.environ.get("OMBRE_API_KEY", "").strip()
+)
+WANDER_LLM_MODEL = (
+    os.environ.get("WANDER_LLM_MODEL", "").strip()
+    or "deepseek-chat"
+)
+
+WANDER_ENABLED = bool(WANDER_LLM_BASE_URL and WANDER_LLM_API_KEY)
+if WANDER_ENABLED:
+    logger.info("Wander layer enabled / 漫步层已启用: DeepSeek dream walk")
+else:
+    logger.info("Wander layer disabled / 漫步层未启用: missing LLM env vars")
+
+
+async def wander_generate_step(system_prompt: str, user_prompt: str,
+                                p: dict = WANDER_PARAMS) -> str:
+    """Call DeepSeek for one wander step. Returns generated text.
+    调 DeepSeek 做一步漫步续写。返回生成的文本。"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{WANDER_LLM_BASE_URL}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {WANDER_LLM_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": WANDER_LLM_MODEL,
+                    "max_tokens": p["max_tokens"],
+                    "temperature": p["temperature"],
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                },
+            )
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            text = (msg.get("content") or "").strip()
+            return text
+    except Exception as e:
+        logger.warning(f"Wander LLM step failed / 漫步生成失败: {e}")
+        return ""
+
+
+async def wander_run(bucket_mgr, desire_engine, merge_or_create,
+                     p: dict = WANDER_PARAMS) -> bool:
+    """Execute a complete wander session.
+    执行一次完整的漫步。
+
+    Returns True if a dream was produced and stored; False otherwise.
+    产出梦境并存储返回True，否则False。
+    """
+    if not WANDER_ENABLED:
+        return False
+
+    now = time.time()
+
+    # --- Check trigger conditions ---
+    idle_h = (now - desire_engine.state.get("last_interaction_ts", now)) / 3600.0
+    wander_state = desire_engine.state.setdefault("wander", default_wander_state())
+    last_wander = wander_state.get("last_wander_ts", 0.0)
+
+    if not should_wander(idle_h, last_wander, now, p):
+        return False
+
+    logger.info(f"Wander triggered / 漫步触发: idle={idle_h:.1f}h")
+
+    # --- Load all buckets ---
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        logger.warning(f"Wander bucket load failed / 加载桶失败: {e}")
+        return False
+
+    # --- Pick seed ---
+    seed = pick_seed_bucket(all_buckets, p)
+    if seed is None:
+        logger.info("Wander: no suitable seed bucket / 没有合适的起点桶")
+        return False
+
+    seed_meta = seed.get("metadata", {})
+    seed_v = float(seed_meta.get("valence", 0.5))
+    seed_a = float(seed_meta.get("arousal", 0.3))
+
+    logger.info(
+        f"Wander seed: {seed['id'][:8]}… "
+        f"v={seed_v:.2f} a={seed_a:.2f} "
+        f"name={seed_meta.get('name', '?')}"
+    )
+
+    # --- Walk ---
+    steps = []
+    visited = {seed["id"]}
+    current_bucket = seed
+    previous_output = ""
+
+    for step_num in range(p["max_steps"]):
+        bucket_content = current_bucket.get("content", "").strip()
+
+        # Build prompt
+        if step_num == 0:
+            user_prompt = build_first_step_prompt(bucket_content, seed_v, seed_a)
+        else:
+            user_prompt = build_step_prompt(previous_output, bucket_content)
+
+        # Generate
+        generated = await wander_generate_step(WANDER_SYSTEM_PROMPT, user_prompt, p)
+
+        if not generated:
+            logger.info(f"Wander step {step_num+1}: empty response, stopping / 空回复，停")
+            break
+
+        steps.append({
+            "bucket_id": current_bucket["id"],
+            "bucket_name": current_bucket.get("metadata", {}).get("name", ""),
+            "generated_text": generated,
+        })
+
+        logger.info(
+            f"Wander step {step_num+1}: {current_bucket['id'][:8]}… → "
+            f"{len(generated)} chars"
+        )
+
+        # Dead end check
+        if is_dead_end(generated, p):
+            logger.info(f"Wander step {step_num+1}: dead end / 死胡同")
+            break
+
+        # Carry forward
+        previous_output = generated
+
+        # Pick next bucket
+        next_bucket = pick_next_bucket(current_bucket, all_buckets, visited, p)
+        if next_bucket is None:
+            logger.info("Wander: no more buckets to jump to / 没有桶可跳了")
+            break
+
+        visited.add(next_bucket["id"])
+        current_bucket = next_bucket
+
+    # --- Check minimum steps ---
+    if len(steps) < p["min_steps"]:
+        logger.info(
+            f"Wander: only {len(steps)} steps, below minimum {p['min_steps']} / "
+            f"步数不够，不存"
+        )
+        # Still update timestamp to avoid immediate re-trigger
+        wander_state["last_wander_ts"] = now
+        desire_engine._save()
+        return False
+
+    # --- Store product ---
+    product_content = format_wander_product(steps)
+    product_name = format_wander_summary(steps, (seed_v, seed_a))
+
+    try:
+        await merge_or_create(
+            content=product_content,
+            tags=["wander", "梦境", "非事实"],
+            importance=3,
+            domain=["wander"],
+            valence=seed_v,
+            arousal=seed_a,
+            name=product_name,
+        )
+        logger.info(f"Wander product stored / 梦境已存储: {product_name}")
+    except Exception as e:
+        logger.warning(f"Wander store failed / 存储失败: {e}")
+        return False
+
+    # --- Update wander state ---
+    wander_state["last_wander_ts"] = now
+    wander_state["wander_count"] = wander_state.get("wander_count", 0) + 1
+    wander_state["last_wander_steps"] = len(steps)
+    desire_engine._save()
+
+    return True
+
+
+async def on_wander_check(snapshot: dict, *, desire_engine, bucket_mgr,
+                          merge_or_create) -> None:
+    """Tick callback: check if wander should fire, run if yes.
+    tick回调：检查是否该漫步，该就跑。
+
+    Called from server.py alongside on_desire_tick.
+    跟 on_desire_tick 一起在 server.py 里被调用。"""
+    if not WANDER_ENABLED:
+        return
+    try:
+        await wander_run(bucket_mgr, desire_engine, merge_or_create)
+    except Exception as e:
+        logger.warning(f"Wander check failed / 漫步检查失败: {e}")

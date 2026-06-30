@@ -114,6 +114,9 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.custom_route("/api/export-all", methods=["GET"])(api_export_all)
     mcp.custom_route("/api/import-restore", methods=["GET", "POST"])(api_import_restore)
 
+    # Wander (debug)
+    mcp.custom_route("/api/wander/test", methods=["POST"])(api_wander_test)
+
 
 # =============================================================
 # Auth helpers
@@ -1488,4 +1491,46 @@ async function upload() {
 
     except Exception as e:
         logger.error(f"Import-restore failed: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================
+# Wander debug endpoint / 漫步调试端点
+# =============================================================
+async def api_wander_test(request):
+    """POST /api/wander/test — Force-trigger one wander session, skip idle/cooldown checks.
+    强制触发一次漫步，跳过空闲和冷却检查。调试用。"""
+    from starlette.responses import JSONResponse
+    from services import wander_run, WANDER_ENABLED
+    from wander_engine import WANDER_PARAMS
+    from tools import merge_or_create
+
+    if not WANDER_ENABLED:
+        return JSONResponse({"error": "Wander layer not enabled (missing LLM env vars)"}, status_code=503)
+
+    # Override params to skip idle/cooldown checks
+    # 覆盖参数跳过检查
+    test_params = dict(WANDER_PARAMS)
+    test_params["idle_trigger_hours"] = 0.0    # no idle requirement
+    test_params["cooldown_hours"] = 0.0         # no cooldown
+
+    try:
+        success = await wander_run(
+            _bucket_mgr, _desire_engine, merge_or_create,
+            p=test_params,
+        )
+        if success:
+            wander_state = _desire_engine.state.get("wander", {})
+            return JSONResponse({
+                "status": "dream completed",
+                "steps": wander_state.get("last_wander_steps", 0),
+                "total_wanders": wander_state.get("wander_count", 0),
+            })
+        else:
+            return JSONResponse({
+                "status": "no dream produced",
+                "reason": "not enough steps or no suitable buckets",
+            })
+    except Exception as e:
+        logger.error(f"Wander test failed: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)

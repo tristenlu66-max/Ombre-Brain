@@ -120,17 +120,26 @@ register_routes(
 # =============================================================
 # 5. Wire Desire Tick Callback → services.py
 # =============================================================
-from services import on_desire_tick
+from services import on_desire_tick, on_wander_check
 
 
 async def _on_desire_tick(snapshot: dict) -> None:
-    """Bridge: desire_engine ticks → services.on_desire_tick with injected deps."""
+    """Bridge: desire_engine ticks → services callbacks with injected deps.
+    桥接：desire tick → services 回调，注入依赖。"""
+    # --- Telegram execution layer ---
     await on_desire_tick(
         snapshot,
         desire_engine=desire_engine,
         bucket_mgr=bucket_mgr,
         dehydrator=dehydrator,
         strip_wikilinks=strip_wikilinks,
+        merge_or_create=merge_or_create,
+    )
+    # --- Wander layer (v0.1) ---
+    await on_wander_check(
+        snapshot,
+        desire_engine=desire_engine,
+        bucket_mgr=bucket_mgr,
         merge_or_create=merge_or_create,
     )
 
