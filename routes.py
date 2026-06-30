@@ -1498,39 +1498,147 @@ async function upload() {
 # Wander debug endpoint / 漫步调试端点
 # =============================================================
 async def api_wander_test(request):
-    """POST /api/wander/test — Force-trigger one wander session, skip idle/cooldown checks.
-    强制触发一次漫步，跳过空闲和冷却检查。调试用。"""
+    """POST /api/wander/test — Force-trigger one wander session with full diagnostics.
+    强制触发一次漫步，返回详细诊断信息。调试用。"""
     from starlette.responses import JSONResponse
-    from services import wander_run, WANDER_ENABLED
-    from wander_engine import WANDER_PARAMS
+    from services import wander_generate_step, WANDER_ENABLED, WANDER_LLM_BASE_URL, WANDER_LLM_MODEL
+    from wander_engine import (
+        pick_seed_bucket, pick_next_bucket,
+        build_first_step_prompt, build_step_prompt, is_dead_end,
+        format_wander_product, format_wander_summary,
+        default_wander_state, WANDER_SYSTEM_PROMPT, WANDER_PARAMS,
+    )
     from tools import merge_or_create
 
     if not WANDER_ENABLED:
         return JSONResponse({"error": "Wander layer not enabled (missing LLM env vars)"}, status_code=503)
 
-    # Override params to skip idle/cooldown checks
-    # 覆盖参数跳过检查
-    test_params = dict(WANDER_PARAMS)
-    test_params["idle_trigger_hours"] = 0.0    # no idle requirement
-    test_params["cooldown_hours"] = 0.0         # no cooldown
+    diag = {
+        "llm_base_url": WANDER_LLM_BASE_URL,
+        "llm_model": WANDER_LLM_MODEL,
+        "steps": [],
+    }
 
     try:
-        success = await wander_run(
-            _bucket_mgr, _desire_engine, merge_or_create,
-            p=test_params,
-        )
-        if success:
-            wander_state = _desire_engine.state.get("wander", {})
-            return JSONResponse({
-                "status": "dream completed",
-                "steps": wander_state.get("last_wander_steps", 0),
-                "total_wanders": wander_state.get("wander_count", 0),
+        # --- Load all buckets ---
+        all_buckets = await _bucket_mgr.list_all(include_archive=False)
+        diag["total_buckets"] = len(all_buckets)
+
+        # --- Pick seed (skip should_wander entirely) ---
+        seed = pick_seed_bucket(all_buckets, WANDER_PARAMS)
+        if seed is None:
+            diag["error"] = "no suitable seed bucket found"
+            # Count why
+            pinned = sum(1 for b in all_buckets if b.get("metadata", {}).get("pinned"))
+            permanent = sum(1 for b in all_buckets if b.get("metadata", {}).get("type") == "permanent")
+            feel = sum(1 for b in all_buckets if b.get("metadata", {}).get("type") == "feel")
+            resolved = sum(1 for b in all_buckets if b.get("metadata", {}).get("resolved"))
+            wander_d = sum(1 for b in all_buckets if "wander" in b.get("metadata", {}).get("domain", []))
+            short = sum(1 for b in all_buckets if len(b.get("content", "").strip()) < 20)
+            diag["filter_breakdown"] = {
+                "pinned": pinned, "permanent": permanent, "feel": feel,
+                "resolved": resolved, "wander_domain": wander_d,
+                "too_short": short,
+            }
+            return JSONResponse(diag)
+
+        seed_meta = seed.get("metadata", {})
+        seed_v = float(seed_meta.get("valence", 0.5))
+        seed_a = float(seed_meta.get("arousal", 0.3))
+        diag["seed"] = {
+            "id": seed["id"],
+            "name": seed_meta.get("name", "?"),
+            "valence": seed_v,
+            "arousal": seed_a,
+            "content_len": len(seed.get("content", "")),
+        }
+
+        # --- Walk ---
+        steps_data = []
+        visited = {seed["id"]}
+        current_bucket = seed
+        previous_output = ""
+        p = WANDER_PARAMS
+
+        for step_num in range(p["max_steps"]):
+            bucket_content = current_bucket.get("content", "").strip()
+
+            if step_num == 0:
+                user_prompt = build_first_step_prompt(bucket_content, seed_v, seed_a)
+            else:
+                user_prompt = build_step_prompt(previous_output, bucket_content)
+
+            generated = await wander_generate_step(WANDER_SYSTEM_PROMPT, user_prompt, p)
+
+            step_info = {
+                "step": step_num + 1,
+                "bucket_id": current_bucket["id"][:12],
+                "bucket_name": current_bucket.get("metadata", {}).get("name", "?"),
+                "generated_len": len(generated),
+                "generated_preview": generated[:200] if generated else "(empty)",
+                "is_dead_end": is_dead_end(generated, p) if generated else True,
+            }
+
+            if not generated:
+                step_info["stop_reason"] = "empty LLM response"
+                diag["steps"].append(step_info)
+                break
+
+            steps_data.append({
+                "bucket_id": current_bucket["id"],
+                "bucket_name": current_bucket.get("metadata", {}).get("name", ""),
+                "generated_text": generated,
             })
+            diag["steps"].append(step_info)
+
+            if is_dead_end(generated, p):
+                step_info["stop_reason"] = f"dead end (< {p['dead_end_threshold']} chars)"
+                break
+
+            previous_output = generated
+
+            next_bucket = pick_next_bucket(current_bucket, all_buckets, visited, p)
+            if next_bucket is None:
+                step_info["stop_reason"] = "no bucket to jump to"
+                break
+            visited.add(next_bucket["id"])
+            current_bucket = next_bucket
+
+        diag["total_steps"] = len(steps_data)
+        diag["min_steps_required"] = p["min_steps"]
+
+        # --- Store if enough steps ---
+        if len(steps_data) >= p["min_steps"]:
+            product_content = format_wander_product(steps_data)
+            product_name = format_wander_summary(steps_data, (seed_v, seed_a))
+            await merge_or_create(
+                content=product_content,
+                tags=["wander", "梦境", "非事实"],
+                importance=3,
+                domain=["wander"],
+                valence=seed_v,
+                arousal=seed_a,
+                name=product_name,
+            )
+            # Update wander state
+            import time
+            wander_state = _desire_engine.state.setdefault("wander", default_wander_state())
+            wander_state["last_wander_ts"] = time.time()
+            wander_state["wander_count"] = wander_state.get("wander_count", 0) + 1
+            wander_state["last_wander_steps"] = len(steps_data)
+            _desire_engine._save()
+
+            diag["status"] = "dream completed"
+            diag["product_name"] = product_name
         else:
-            return JSONResponse({
-                "status": "no dream produced",
-                "reason": "not enough steps or no suitable buckets",
-            })
+            diag["status"] = "no dream produced"
+            diag["reason"] = f"only {len(steps_data)} steps, need {p['min_steps']}"
+
+        return JSONResponse(diag)
+
     except Exception as e:
         logger.error(f"Wander test failed: {e}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        import traceback
+        diag["error"] = str(e)
+        diag["traceback"] = traceback.format_exc()
+        return JSONResponse(diag, status_code=500)
