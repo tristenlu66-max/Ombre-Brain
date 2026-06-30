@@ -40,13 +40,13 @@ logger = logging.getLogger("ombre_brain.wander")
 WANDER_PARAMS = {
     "idle_trigger_hours": 5.0,       # 空闲多久触发漫步
     "cooldown_hours": 8.0,           # 两次漫步之间的冷却（调试期 8h，正式 24h）
-    "max_steps": 5,                  # 最多跳几步
+    "max_steps": 3,                  # 最多跳几步（短梦为常态）
     "min_steps": 2,                  # 最少走几步才算漫步
     "dead_end_threshold": 30,        # 生成内容少于这么多字视为死胡同
     "keyword_jump_prob": 0.80,       # 关键词弱重叠跳转概率
     "seed_recent_prob": 0.50,        # 起点选最近桶的概率（vs 远距桶）
     "temperature": 1.0,              # DeepSeek 生成温度
-    "max_tokens": 400,               # 每步生成上限
+    "max_tokens": 150,               # 每步生成上限（短，戛然而止像梦）
 }
 
 # --- System prompt: four sentences, nothing more ---
