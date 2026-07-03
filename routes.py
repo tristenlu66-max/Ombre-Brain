@@ -39,16 +39,18 @@ _embedding_engine = None
 _desire_engine = None
 _import_engine = None
 _fire_webhook = None
+_raw_store = None   # 第4刀 4a
 
 # --- Session store (lost on restart, 7-day expiry) ---
 _sessions: dict[str, float] = {}
 
 
 def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
-                    embedding_engine, desire_engine, import_engine, fire_webhook):
+                    embedding_engine, desire_engine, import_engine, fire_webhook,
+                    raw_store=None):   # 第4刀 4a 签名
     """Called once from server.py to inject shared instances and register all routes."""
     global _mcp, _config, _bucket_mgr, _dehydrator, _decay_engine
-    global _embedding_engine, _desire_engine, _import_engine, _fire_webhook
+    global _embedding_engine, _desire_engine, _import_engine, _fire_webhook, _raw_store   # 4a
     _mcp = mcp
     _config = config
     _bucket_mgr = bucket_mgr
@@ -58,6 +60,7 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     _desire_engine = desire_engine
     _import_engine = import_engine
     _fire_webhook = fire_webhook
+    _raw_store = raw_store
 
     # --- Register all routes ---
     mcp.custom_route("/", methods=["GET"])(root_redirect)
@@ -116,6 +119,9 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
 
     # Wander (debug)
     mcp.custom_route("/api/wander/test", methods=["POST"])(api_wander_test)
+
+    # 第4刀 4b
+    mcp.custom_route("/api/ingest-raw", methods=["POST"])(ingest_raw)
 
 
 # =============================================================
@@ -1642,3 +1648,29 @@ async def api_wander_test(request):
         diag["error"] = str(e)
         diag["traceback"] = traceback.format_exc()
         return JSONResponse(diag, status_code=500)
+
+
+# =============================================================
+# 第4刀 4c: 端点 /api/ingest-raw
+# =============================================================
+async def ingest_raw(request):
+    """批量灌入逐字原文（backfill_raw.py 的对接口）。
+    鉴权：请求头 X-Ombre-Ingest-Token 必须等于环境变量 OMBRE_INGEST_TOKEN；
+    环境变量未设置时端点整体拒绝，防止裸奔。"""
+    import os
+    from starlette.responses import JSONResponse
+    expected = os.environ.get("OMBRE_INGEST_TOKEN", "").strip()
+    if not expected:
+        return JSONResponse({"ok": False, "error": "ingest disabled: OMBRE_INGEST_TOKEN not set"}, status_code=403)
+    if request.headers.get("X-Ombre-Ingest-Token", "") != expected:
+        return JSONResponse({"ok": False, "error": "bad token"}, status_code=401)
+    if _raw_store is None:
+        return JSONResponse({"ok": False, "error": "raw store not wired"}, status_code=500)
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "invalid json"}, status_code=400)
+    events = payload.get("events") or []
+    source = str(payload.get("source") or "import")
+    result = _raw_store.ingest(events, source=source)
+    return JSONResponse(result)
