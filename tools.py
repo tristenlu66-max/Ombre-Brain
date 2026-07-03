@@ -26,13 +26,15 @@ _decay_engine = None
 _embedding_engine = None
 _desire_engine = None
 _fire_webhook = None
+_raw_store = None   # 第3刀 3a
 
 
 def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
-                   embedding_engine, desire_engine, fire_webhook):
+                   embedding_engine, desire_engine, fire_webhook,
+                   raw_store=None):   # 第3刀 3a 签名
     """Called once from server.py to inject shared instances."""
     global _mcp, _config, _bucket_mgr, _dehydrator, _decay_engine
-    global _embedding_engine, _desire_engine, _fire_webhook
+    global _embedding_engine, _desire_engine, _fire_webhook, _raw_store   # 3a
     _mcp = mcp
     _config = config
     _bucket_mgr = bucket_mgr
@@ -41,6 +43,7 @@ def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     _embedding_engine = embedding_engine
     _desire_engine = desire_engine
     _fire_webhook = fire_webhook
+    _raw_store = raw_store
 
     # --- Register all 6 tools on the mcp instance ---
     mcp.tool()(breath)
@@ -49,6 +52,9 @@ def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.tool()(trace)
     mcp.tool()(pulse)
     mcp.tool()(dream)
+    # 第3刀 3b
+    mcp.tool()(raw_keep)
+    mcp.tool()(raw_search)
 
 
 # =============================================================
@@ -1031,4 +1037,61 @@ async def dream() -> str:
         except Exception as e:
             logger.warning(f"Dream crystallization hint failed: {e}")
 
-    
+    return header + "\n".join(parts) + (connection_hint or "") + (crystal_hint or "")
+
+
+# =============================================================
+# 原文保险箱：逐字存 / 逐字捞  (第3刀 3c)
+# raw_keep 与 hold 的区别：hold 脱水成摘要，raw_keep 一字不改封存。
+# =============================================================
+
+async def raw_keep(
+    text: str,
+    role: str = "user",
+    conversation_id: str = "",
+    note: str = "",
+) -> str:
+    """逐字封存一段原话。text=原文（一字不改），role=谁说的（user/assistant），
+    note=可选备注（存进元数据，不污染原文）。检索用 raw_search。"""
+    if _raw_store is None:
+        return "原文保险箱未启用。"
+    event = {
+        "role": role,
+        "text": text,
+        "conversation_id": conversation_id,
+    }
+    if note:
+        event["metadata"] = {"note": note}
+    result = _raw_store.ingest([event], source="live")
+    if result.get("inserted"):
+        return f"已逐字封存（id={result['items'][0].get('id')}）。"
+    if result.get("duplicate"):
+        return "这段原话已在保险箱里，未重复存。"
+    return f"封存失败：{result['items'][0].get('reason', '未知原因')}"
+
+
+async def raw_search(
+    query: str = "",
+    limit: int = 5,
+    role: str = "",
+    source: str = "",
+    conversation_id: str = "",
+    since: str = "",
+    until: str = "",
+) -> str:
+    """在原文保险箱里检索逐字原文。query 留空则按时间倒序返回最近条目；
+    role=user/assistant 过滤说话人；since/until 用 ISO 日期。返回原话，不做摘要。"""
+    if _raw_store is None:
+        return "原文保险箱未启用。"
+    result = _raw_store.search(
+        query, limit=limit, role=role, source=source,
+        conversation_id=conversation_id, since=since, until=until,
+    )
+    items = result.get("items", [])
+    if not items:
+        return "保险箱里没有匹配的原文。"
+    lines = [f"共 {len(items)} 条："]
+    for it in items:
+        when = (it.get("created_at") or "")[:16]
+        lines.append(f"[{when}] [{it.get('role')}] {it.get('text')}")
+    return "\n".join(lines)
