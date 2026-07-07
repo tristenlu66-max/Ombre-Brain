@@ -1304,13 +1304,24 @@ async def api_export_all(request):
             manifest = {
                 "exported_at": datetime.datetime.now().isoformat(),
                 "total_buckets": len(all_buckets),
-                "version": "1.4.1",
+                "version": "1.5.1",
                 "includes_embeddings": True,
                 "counts_by_type": {},
             }
             for b in all_buckets:
                 t = b.get("metadata", {}).get("type", "dynamic")
                 manifest["counts_by_type"][t] = manifest["counts_by_type"].get(t, 0) + 1
+            # --- Include raw_events.sqlite if it exists ---
+            if _raw_store and hasattr(_raw_store, 'db_path'):
+                raw_db_path = _raw_store.db_path
+                if os.path.isfile(raw_db_path):
+                    try:
+                        zf.write(raw_db_path, "raw_events.sqlite")
+                        manifest["includes_raw_events"] = True
+                        logger.info(f"Export: raw_events.sqlite included ({os.path.getsize(raw_db_path) / 1024:.0f} KB)")
+                    except Exception as raw_err:
+                        logger.warning(f"Export: failed to include raw_events.sqlite: {raw_err}")
+
             zf.writestr(
                 "manifest.json",
                 _json_lib.dumps(manifest, ensure_ascii=False, indent=2),
@@ -1435,6 +1446,8 @@ async function upload() {
                     type_dir = _bucket_mgr.feel_dir
                 elif bucket_type == "note":
                     type_dir = _bucket_mgr.note_dir
+                elif bucket_type == "i":
+                    type_dir = _bucket_mgr.self_dir
                 elif bucket_type == "archive":
                     type_dir = _bucket_mgr.archive_dir
                 else:
@@ -1445,6 +1458,8 @@ async function upload() {
                     primary_domain = "沉淀物"
                 elif bucket_type == "note":
                     primary_domain = "鸿湍笔记"
+                elif bucket_type == "i":
+                    primary_domain = "自我认知"
                 else:
                     primary_domain = sanitize_name(domain[0]) if domain else "未分类"
 
@@ -1480,6 +1495,21 @@ async function upload() {
                 failed += 1
                 errors.append(f"{name}: {str(e)[:80]}")
 
+        # --- Restore raw_events.sqlite if present in zip ---
+        raw_restored = False
+        if "raw_events.sqlite" in zf.namelist() and _raw_store and hasattr(_raw_store, 'db_path'):
+            try:
+                raw_db_bytes = zf.read("raw_events.sqlite")
+                raw_db_path = _raw_store.db_path
+                os.makedirs(os.path.dirname(raw_db_path), exist_ok=True)
+                with open(raw_db_path, "wb") as f:
+                    f.write(raw_db_bytes)
+                raw_restored = True
+                logger.info(f"Import-restore: raw_events.sqlite restored ({len(raw_db_bytes) / 1024:.0f} KB)")
+            except Exception as raw_err:
+                logger.warning(f"Import-restore: failed to restore raw_events.sqlite: {raw_err}")
+                errors.append(f"raw_events.sqlite: {str(raw_err)[:80]}")
+
         zf.close()
 
         result = {
@@ -1488,6 +1518,7 @@ async function upload() {
             "failed": failed,
             "skipped": skipped,
             "embeddings_restored": embeddings_restored,
+            "raw_events_restored": raw_restored,
         }
         if errors:
             result["errors"] = errors[:20]
