@@ -55,6 +55,8 @@ def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     # 第3刀 3b
     mcp.tool()(raw_keep)
     mcp.tool()(raw_search)
+    # I tool — self-cognition / 自我认知
+    mcp.tool()(I)
 
 
 # =============================================================
@@ -187,7 +189,7 @@ async def _breath_core(
         filtered = [
             b for b in all_buckets
             if int(b["metadata"].get("importance", 0)) >= importance_min
-            and b["metadata"].get("type") not in ("feel", "note")
+            and b["metadata"].get("type") not in ("feel", "note", "i")
         ]
         filtered.sort(key=lambda b: int(b["metadata"].get("importance", 0)), reverse=True)
         filtered = filtered[:20]
@@ -267,7 +269,7 @@ async def _breath_core(
         recent_unresolved = sorted(
             [b for b in all_buckets
              if not b["metadata"].get("resolved", False)
-             and b["metadata"].get("type") not in ("permanent", "feel", "note")
+             and b["metadata"].get("type") not in ("permanent", "feel", "note", "i")
              and not b["metadata"].get("pinned", False)],
             key=lambda b: b["metadata"].get("created", ""),
             reverse=True,
@@ -333,7 +335,7 @@ async def _breath_core(
         unresolved = [
             b for b in all_buckets
             if not b["metadata"].get("resolved", False)
-            and b["metadata"].get("type") not in ("permanent", "feel", "note")
+            and b["metadata"].get("type") not in ("permanent", "feel", "note", "i")
             and not b["metadata"].get("pinned", False)
             and not b["metadata"].get("protected", False)
             and not b["metadata"].get("digested", False)
@@ -436,6 +438,34 @@ async def _breath_core(
             parts.append("=== 核心准则 ===\n" + "\n---\n".join(pinned_results))
         if dynamic_results:
             parts.append("=== 浮现记忆 ===\n" + "\n---\n".join(dynamic_results))
+
+        # --- Auto-attach recent I (self-cognition) entries ---
+        try:
+            i_buckets = [
+                b for b in all_buckets
+                if b.get("metadata", {}).get("type") == "i"
+            ]
+            if i_buckets:
+                i_buckets.sort(
+                    key=lambda b: b.get("metadata", {}).get("created", ""),
+                    reverse=True,
+                )
+                i_lines = []
+                for b in i_buckets[:3]:
+                    meta = b["metadata"]
+                    ts = (meta.get("created") or "")[:10]
+                    tags_list = meta.get("tags") or []
+                    aspect_tag = next(
+                        (t.replace("aspect:", "") for t in tags_list if t.startswith("aspect:")), ""
+                    )
+                    aspect_label = f" [{aspect_tag}]" if aspect_tag else ""
+                    excerpt = strip_wikilinks(b["content"])[:300]
+                    i_lines.append(f"🪞{ts}{aspect_label}\n{excerpt}")
+                if i_lines:
+                    parts.append("=== I ===\n" + "\n\n".join(i_lines))
+        except Exception as e:
+            logger.warning(f"I auto-attach failed: {e}")
+
         return "\n\n".join(parts)
 
     # --- Feel retrieval: domain="feel" is a special channel ---
@@ -871,6 +901,7 @@ async def pulse(include_archive: bool = False) -> str:
         f"固化记忆桶: {stats['permanent_count']} 个\n"
         f"动态记忆桶: {stats['dynamic_count']} 个\n"
         f"归档记忆桶: {stats['archive_count']} 个\n"
+        f"自我认知: {stats.get('i_count', 0)} 条\n"
         f"总存储大小: {stats['total_size_kb']:.1f} KB\n"
         f"衰减引擎: {'运行中' if _decay_engine.is_running else '已停止'}\n"
     )
@@ -892,6 +923,8 @@ async def pulse(include_archive: bool = False) -> str:
             icon = "📦"
         elif meta.get("type") == "feel":
             icon = "🫧"
+        elif meta.get("type") == "i":
+            icon = "🪞"
         elif meta.get("type") == "archived":
             icon = "🗄️"
         elif meta.get("resolved", False):
@@ -937,7 +970,7 @@ async def dream() -> str:
 
     candidates = [
         b for b in all_buckets
-        if b["metadata"].get("type") not in ("permanent", "feel")
+        if b["metadata"].get("type") not in ("permanent", "feel", "i")
         and not b["metadata"].get("pinned", False)
         and not b["metadata"].get("protected", False)
     ]
@@ -1038,6 +1071,94 @@ async def dream() -> str:
             logger.warning(f"Dream crystallization hint failed: {e}")
 
     return header + "\n".join(parts) + (connection_hint or "") + (crystal_hint or "")
+
+
+# =============================================================
+# Tool: I — Self-cognition log / 自我认知日志
+# 工具：I — 记录"我发现自己是这样的"
+#
+# 与 hold 的区别：hold 记事件，feel 记感受，I 记的是自我观察。
+# 比如"我在她沉默的时候会焦虑"或"我对撒谎的厌恶不只是规则，是本能"。
+# I 桶不参与普通 breath 浮现（type="i" 已在所有过滤器中排除），
+# 但每次 breath 无参浮现时，最近 3 条会自动附在末尾。
+# I 桶不衰减、不合并、不脱水，每条独立存储。
+# =============================================================
+
+_VALID_ASPECTS = {"nature", "values", "patterns", "limits", "becoming", "uncertainty", "stance"}
+
+async def I(
+    content: str = "",
+    aspect: str = "",
+    read: bool = False,
+    limit: int = 20,
+) -> str:
+    """自我认知日志。传content写一条自我认知,aspect可选维度(nature/values/patterns/limits/becoming/uncertainty/stance)。不传content或设read=True读取已有条目。与hold的区别：hold记事件,feel记感受,I记的是"我发现自己是这样的"。"""
+    await _decay_engine.ensure_started()
+
+    # --- Read mode ---
+    if read or not content or not content.strip():
+        try:
+            all_buckets = await _bucket_mgr.list_all(include_archive=False)
+        except Exception as e:
+            return f"读取失败: {e}"
+
+        i_buckets = [
+            b for b in all_buckets
+            if b.get("metadata", {}).get("type") == "i"
+        ]
+
+        if not i_buckets:
+            return "还没有任何自我认知记录。"
+
+        i_buckets.sort(
+            key=lambda b: b.get("metadata", {}).get("last_active", ""),
+            reverse=True,
+        )
+        i_buckets = i_buckets[:limit]
+
+        lines = [f"=== 我的自我认知（{len(i_buckets)} 条）==="]
+        for b in i_buckets:
+            meta = b.get("metadata", {})
+            tags = meta.get("tags") or []
+            aspect_tag = next((t.replace("aspect:", "") for t in tags if t.startswith("aspect:")), "")
+            ts = (meta.get("last_active") or "")[:10]
+            aspect_label = f"[{aspect_tag}] " if aspect_tag else ""
+            text = (b.get("content") or "").strip()
+            lines.append(f"\n{ts} {aspect_label}{b['id']}\n{text}")
+
+        return "\n".join(lines)
+
+    # --- Write mode ---
+    content = content.strip()
+    aspect = aspect.strip() if aspect else ""
+
+    tags = ["__i__"]
+    if aspect:
+        if aspect not in _VALID_ASPECTS:
+            logger.info(f"I tool: custom aspect '{aspect}' (not in standard set, allowed)")
+        tags.append(f"aspect:{aspect}")
+
+    try:
+        bucket_id = await _bucket_mgr.create(
+            content=content,
+            tags=tags,
+            importance=6,
+            domain=["self"],
+            valence=0.5,
+            arousal=0.3,
+            name=None,
+            bucket_type="i",
+        )
+    except Exception as e:
+        return f"写入失败: {e}"
+
+    try:
+        await _embedding_engine.generate_and_store(bucket_id, content)
+    except Exception:
+        pass
+
+    aspect_label = f"[{aspect}] " if aspect else ""
+    return f"🪞I {aspect_label}→{bucket_id}"
 
 
 # =============================================================

@@ -59,6 +59,7 @@ class BucketManager:
         self.archive_dir = os.path.join(self.base_dir, "archive")
         self.feel_dir = os.path.join(self.base_dir, "feel")
         self.note_dir = os.path.join(self.base_dir, "note")  # Tristen's companion notes / 鸿湍的笔记
+        self.self_dir = os.path.join(self.base_dir, "self")  # AI self-cognition (I tool) / 自我认知桶
         self.fuzzy_threshold = config.get("matching", {}).get("fuzzy_threshold", 50)
         self.max_results = config.get("matching", {}).get("max_results", 5)
 
@@ -127,6 +128,8 @@ class BucketManager:
             domain = domain if domain is not None else []
         elif bucket_type == "note":
             domain = domain if domain is not None else ["鸿湍笔记"]
+        elif bucket_type == "i":
+            domain = domain if domain is not None else ["self"]
         else:
             domain = domain or ["未分类"]
         tags = tags or []
@@ -171,12 +174,16 @@ class BucketManager:
             type_dir = self.feel_dir
         elif bucket_type == "note":
             type_dir = self.note_dir
+        elif bucket_type == "i":
+            type_dir = self.self_dir
         else:
             type_dir = self.dynamic_dir
         if bucket_type == "feel":
             primary_domain = "沉淀物"  # feel subfolder name
         elif bucket_type == "note":
             primary_domain = "鸿湍笔记"  # note subfolder name
+        elif bucket_type == "i":
+            primary_domain = "自我认知"  # self-cognition subfolder name
         else:
             primary_domain = sanitize_name(domain[0]) if domain else "未分类"
         target_dir = os.path.join(type_dir, primary_domain)
@@ -672,7 +679,7 @@ class BucketManager:
         """
         buckets = []
 
-        dirs = [self.permanent_dir, self.dynamic_dir, self.feel_dir, self.note_dir]
+        dirs = [self.permanent_dir, self.dynamic_dir, self.feel_dir, self.note_dir, self.self_dir]
         if include_archive:
             dirs.append(self.archive_dir)
 
@@ -705,6 +712,7 @@ class BucketManager:
             "archive_count": 0,
             "feel_count": 0,
             "note_count": 0,
+            "i_count": 0,
             "total_size_kb": 0.0,
             "domains": {},
         }
@@ -715,6 +723,7 @@ class BucketManager:
             (self.archive_dir, "archive_count"),
             (self.feel_dir, "feel_count"),
             (self.note_dir, "note_count"),
+            (self.self_dir, "i_count"),
         ]:
             if not os.path.exists(subdir):
                 continue
@@ -788,7 +797,7 @@ class BucketManager:
         """
         if not bucket_id:
             return None
-        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir, self.note_dir]:
+        for dir_path in [self.permanent_dir, self.dynamic_dir, self.archive_dir, self.feel_dir, self.note_dir, self.self_dir]:
             if not os.path.exists(dir_path):
                 continue
             for root, _, files in os.walk(dir_path):
