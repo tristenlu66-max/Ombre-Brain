@@ -615,6 +615,7 @@
   <div class="tab" data-tab="calendar">🗓 日历</div>
   <div class="tab" data-tab="timeline">时间线</div>
   <div class="tab" data-tab="breath">Breath 模拟</div>
+  <div class="tab" data-tab="wander">🌙 漫步</div>
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
   <div class="tab" data-tab="import">导入</div>
@@ -846,6 +847,31 @@
 <div class="detail-panel" id="detail-panel">
   <button class="close-btn" onclick="closeDetail()">✕</button>
   <div id="detail-content"></div>
+</div>
+
+<!-- Wander Tab View -->
+<div class="content" id="wander-view" style="display:none">
+  <div id="wonderland-section" style="margin-bottom:36px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;">
+      <span style="font-size:18px;">✦</span>
+      <h2 style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--accent);margin:0;">Wonderland</h2>
+      <span id="wonderland-count" style="font-size:12px;color:var(--text-dim);"></span>
+    </div>
+    <div id="wonderland-list" style="display:flex;flex-direction:column;gap:8px;padding:16px;border:1px solid rgba(47,79,79,0.15);border-radius:16px;background:rgba(47,79,79,0.03);min-height:60px;">
+      <div class="loading" style="font-size:13px;color:var(--text-light);">加载中…</div>
+    </div>
+  </div>
+
+  <div id="wander-section">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;">
+      <span style="font-size:18px;">🌙</span>
+      <h2 style="font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--text-dim);margin:0;">漫步中的梦</h2>
+      <span id="wander-count" style="font-size:12px;color:var(--text-light);"></span>
+    </div>
+    <div id="wander-list" class="bucket-list">
+      <div class="loading">加载中…</div>
+    </div>
+  </div>
 </div>
 
 <!-- Settings Tab View -->
@@ -1114,12 +1140,14 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('calendar-view').style.display = target === 'calendar' ? '' : 'none';
     document.getElementById('timeline-view').style.display = target === 'timeline' ? '' : 'none';
     document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
+    document.getElementById('wander-view').style.display = target === 'wander' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
     document.getElementById('settings-view').style.display = target === 'settings' ? '' : 'none';
     if (target === 'calendar') loadCalendar();
     if (target === 'timeline') loadTimeline();
+    if (target === 'wander') loadWanderView();
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
@@ -1964,6 +1992,166 @@ async function submitNote() {
       document.getElementById('note-msg').textContent = err.error || '保存失败';
     }
   } catch(e) { document.getElementById('note-msg').textContent = '网络错误'; }
+}
+
+// ========================================
+// Wander / Wonderland view
+// ========================================
+async function loadWanderView() {
+  // Use allBuckets if loaded, otherwise fetch
+  var buckets = allBuckets;
+  if (!buckets || !buckets.length) {
+    try {
+      var res = await fetch(BASE + '/api/buckets');
+      buckets = await res.json();
+    } catch (e) {
+      document.getElementById('wonderland-list').innerHTML = '<div class="loading">加载失败</div>';
+      document.getElementById('wander-list').innerHTML = '<div class="loading">加载失败</div>';
+      return;
+    }
+  }
+
+  var wonderBuckets = buckets.filter(function(b) {
+    return (b.domain || []).includes('wonderland');
+  });
+  var wanderBuckets = buckets.filter(function(b) {
+    var d = b.domain || [];
+    return d.includes('wander') && !d.includes('wonderland');
+  });
+
+  // Sort by creation time descending
+  wonderBuckets.sort(function(a, b) { return (b.created || '').localeCompare(a.created || ''); });
+  wanderBuckets.sort(function(a, b) { return (b.created || '').localeCompare(a.created || ''); });
+
+  document.getElementById('wonderland-count').textContent = wonderBuckets.length ? wonderBuckets.length + ' 个梦' : '还没有梦进入这里';
+  document.getElementById('wander-count').textContent = wanderBuckets.length + ' 个梦';
+
+  if (!wonderBuckets.length) {
+    document.getElementById('wonderland-list').innerHTML = '<div style="text-align:center;color:var(--text-light);font-size:13px;padding:20px 0;">花园还是空的。等一个值得记住的梦。</div>';
+  } else {
+    document.getElementById('wonderland-list').innerHTML = wonderBuckets.map(function(b) {
+      return renderWanderRow(b, true);
+    }).join('');
+  }
+
+  if (!wanderBuckets.length) {
+    document.getElementById('wander-list').innerHTML = '<div class="loading">还没有梦</div>';
+  } else {
+    document.getElementById('wander-list').innerHTML = wanderBuckets.map(function(b) {
+      return renderWanderRow(b, false);
+    }).join('');
+  }
+}
+
+function renderWanderRow(b, isWonder) {
+  var icon = isWonder ? '✦' : '🌙';
+  var vPos = Math.round(b.valence * 100);
+  var timeAgo = formatTimeAgo(b.last_active || b.created);
+  return '<div class="bucket-row" onclick="showWanderDetail(\'' + b.id + '\')" style="' + (isWonder ? 'border-left:3px solid var(--accent);' : '') + '">' +
+    '<span class="icon">' + icon + '</span>' +
+    '<span class="name" title="' + esc(b.name) + '">' + esc(b.name) + '</span>' +
+    '<span class="domain">' + (b.domain || []).filter(function(d){ return d !== 'wander'; }).join(', ') + '</span>' +
+    '<span class="emotion"><span class="v-bar"><span class="v-dot" style="left:' + vPos + '%"></span></span></span>' +
+    '<span class="score">' + b.score.toFixed(2) + '</span>' +
+    '<span class="time">' + timeAgo + '</span>' +
+    '<span class="preview">' + esc(b.content_preview) + '</span>' +
+  '</div>';
+}
+
+async function showWanderDetail(id) {
+  var panel = document.getElementById('detail-panel');
+  var content = document.getElementById('detail-content');
+  content.innerHTML = '<div class="loading">加载中…</div>';
+  panel.classList.add('open');
+
+  try {
+    var res = await fetch(BASE + '/api/bucket/' + id);
+    var b = await res.json();
+    var meta = b.metadata || {};
+    var domains = meta.domain || [];
+    var isWander = domains.includes('wander');
+    var isWonder = domains.includes('wonderland');
+
+    var wonderBtn = '';
+    if (isWander && !isWonder) {
+      wonderBtn =
+        '<div style="margin:16px 0;padding:12px;background:rgba(47,79,79,0.05);border-radius:12px;text-align:center;">' +
+          '<button id="wonder-btn" onclick="confirmWonder(\'' + id + '\')" style="background:var(--accent);color:#fff;border:none;border-radius:12px;padding:10px 24px;font-size:13px;cursor:pointer;font-family:inherit;letter-spacing:0.3px;">✦ 送入 Wonderland</button>' +
+        '</div>';
+    } else if (isWonder) {
+      wonderBtn =
+        '<div style="margin:16px 0;padding:12px;background:rgba(47,79,79,0.05);border-radius:12px;text-align:center;">' +
+          '<span style="color:var(--accent);font-size:13px;">✦ 已在 Wonderland</span>' +
+        '</div>';
+    }
+
+    content.innerHTML =
+      '<h2>' + esc(meta.name || id) + '</h2>' +
+      wonderBtn +
+      '<div class="detail-meta">' +
+        '<div class="field"><label>ID</label>' + id + '</div>' +
+        '<div class="field"><label>域</label>' + domains.join(', ') + '</div>' +
+        '<div class="field"><label>标签</label>' + (meta.tags || []).join(', ') + '</div>' +
+        '<div class="field"><label>事件效价</label>V' + (meta.valence || 0.5).toFixed(2) + '</div>' +
+        '<div class="field"><label>唤醒度</label>A' + (meta.arousal || 0.3).toFixed(2) + '</div>' +
+        '<div class="field"><label>创建</label>' + (meta.created || '—') + '</div>' +
+      '</div>' +
+      '<div class="detail-content" style="white-space:pre-wrap;">' + esc(b.content) + '</div>';
+  } catch (e) {
+    content.innerHTML = '<div class="loading">加载失败: ' + e.message + '</div>';
+  }
+}
+
+function confirmWonder(bucketId) {
+  var btn = document.getElementById('wonder-btn');
+  if (btn.dataset.confirming === 'true') {
+    // Second click: actually send
+    doWonder(bucketId);
+    return;
+  }
+  // First click: show confirmation
+  btn.textContent = '确认送入？';
+  btn.style.background = 'var(--positive)';
+  btn.dataset.confirming = 'true';
+  // Auto-reset after 3 seconds
+  setTimeout(function() {
+    if (btn && btn.dataset.confirming === 'true') {
+      btn.textContent = '✦ 送入 Wonderland';
+      btn.style.background = 'var(--accent)';
+      btn.dataset.confirming = 'false';
+    }
+  }, 3000);
+}
+
+async function doWonder(bucketId) {
+  var btn = document.getElementById('wonder-btn');
+  btn.textContent = '送入中…';
+  btn.disabled = true;
+  try {
+    var r = await fetch(BASE + '/api/wonder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bucket_id: bucketId, wonder: true }),
+    });
+    if (r.ok) {
+      btn.outerHTML = '<span style="color:var(--accent);font-size:13px;">✦ 已在 Wonderland</span>';
+      // Refresh data
+      loadBuckets();
+    } else {
+      var err = await r.json();
+      alert('失败: ' + (err.error || '未知错误'));
+      btn.textContent = '✦ 送入 Wonderland';
+      btn.style.background = 'var(--accent)';
+      btn.dataset.confirming = 'false';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    alert('请求失败: ' + e.message);
+    btn.textContent = '✦ 送入 Wonderland';
+    btn.style.background = 'var(--accent)';
+    btn.dataset.confirming = 'false';
+    btn.disabled = false;
+  }
 }
 </script>
 </body>

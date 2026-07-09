@@ -654,6 +654,14 @@ async def hold(
                 update_kwargs = {"digested": True}
                 if 0 <= valence <= 1:
                     update_kwargs["model_valence"] = feel_valence
+                # Auto-wonder: if source is a wander bucket, promote to wonderland
+                # 回响自动升级：source 是 wander 桶时，自动送入 wonderland
+                src = await _bucket_mgr.get(source_bucket.strip())
+                if src:
+                    src_domains = src.get("metadata", {}).get("domain", [])
+                    if "wander" in src_domains and "wonderland" not in src_domains:
+                        update_kwargs["wonder"] = True
+                        logger.info(f"Auto-wonder via hold echo / hold回响自动升级: {source_bucket.strip()}")
                 await _bucket_mgr.update(source_bucket.strip(), **update_kwargs)
             except Exception as e:
                 logger.warning(f"Failed to mark source as digested / 标记已消化失败: {e}")
@@ -810,8 +818,9 @@ async def trace(
     digested: int = -1,
     content: str = "",
     delete: bool = False,
+    wonder: int = -1,
 ) -> str:
-    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,pin_level=1必出/2场景触发/3背景轮换(仅pinned桶),digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除。只传需改的,-1或空=不改。"""
+    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,pin_level=1必出/2场景触发/3背景轮换(仅pinned桶),digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除,wonder=1送入wonderland/0移出。只传需改的,-1或空=不改。"""
 
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
@@ -852,6 +861,8 @@ async def trace(
         updates["pin_level"] = pin_level
     if digested in (0, 1):
         updates["digested"] = bool(digested)
+    if wonder in (0, 1):
+        updates["wonder"] = bool(wonder)
     if content:
         updates["content"] = content
 
@@ -882,6 +893,11 @@ async def trace(
             changed += " → 已隐藏，保留但不再浮现"
         else:
             changed += " → 已取消隐藏，重新参与浮现"
+    if "wonder" in updates:
+        if updates["wonder"]:
+            changed += " → ✦ 已送入 wonderland"
+        else:
+            changed += " → 已移出 wonderland"
     return f"已修改记忆桶 {bucket_id}: {changed}"
 
 

@@ -39,7 +39,7 @@ logger = logging.getLogger("ombre_brain.wander")
 # --- Wander parameters ---
 WANDER_PARAMS = {
     "idle_trigger_hours": 5.0,       # 空闲多久触发漫步
-    "cooldown_hours": 8.0,           # 两次漫步之间的冷却（调试期 8h，正式 24h）
+    "cooldown_hours": 24.0,          # 两次漫步之间的冷却（正式 24h）
     "max_steps": 3,                  # 最多跳几步（短梦为常态）
     "min_steps": 2,                  # 最少走几步才算漫步
     "dead_end_threshold": 30,        # 生成内容少于这么多字视为死胡同

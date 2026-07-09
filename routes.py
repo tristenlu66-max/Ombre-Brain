@@ -117,8 +117,9 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.custom_route("/api/export-all", methods=["GET"])(api_export_all)
     mcp.custom_route("/api/import-restore", methods=["GET", "POST"])(api_import_restore)
 
-    # Wander (debug)
+    # Wander (debug) & Wonderland
     mcp.custom_route("/api/wander/test", methods=["POST"])(api_wander_test)
+    mcp.custom_route("/api/wonder", methods=["POST"])(api_wonder)
 
     # 第4刀 4b
     mcp.custom_route("/api/ingest-raw", methods=["POST"])(ingest_raw)
@@ -1679,6 +1680,37 @@ async def api_wander_test(request):
         diag["error"] = str(e)
         diag["traceback"] = traceback.format_exc()
         return JSONResponse(diag, status_code=500)
+
+
+# =============================================================
+# Wonderland: promote/demote wander buckets (dashboard button)
+# Wonderland: 送入/移出 wonderland（dashboard 按钮）
+# =============================================================
+async def api_wonder(request):
+    """POST /api/wonder — Toggle wonder flag on a wander bucket.
+    Dashboard 用。鸿湍的一票。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err: return err
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid JSON"}, status_code=400)
+    bucket_id = body.get("bucket_id", "")
+    if not bucket_id:
+        return JSONResponse({"error": "missing bucket_id"}, status_code=400)
+    bucket = await _bucket_mgr.get(bucket_id)
+    if not bucket:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    # Must be a wander bucket
+    domains = bucket.get("metadata", {}).get("domain", [])
+    if "wander" not in domains:
+        return JSONResponse({"error": "只有 wander 桶可以送入 wonderland"}, status_code=400)
+    new_value = bool(body.get("wonder", True))
+    success = await _bucket_mgr.update(bucket_id, wonder=new_value)
+    if not success:
+        return JSONResponse({"error": "更新失败"}, status_code=500)
+    return JSONResponse({"ok": True, "wonder": new_value})
 
 
 # =============================================================

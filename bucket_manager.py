@@ -309,6 +309,17 @@ class BucketManager:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
         if "bot_visible" in kwargs:
             post["bot_visible"] = bool(kwargs["bot_visible"])
+        if "wonder" in kwargs:
+            post["wonder"] = bool(kwargs["wonder"])
+            # Auto-manage domain: add/remove "wonderland"
+            # 自动管理 domain：添加/移除 "wonderland"
+            cur_domain = list(post.get("domain", []))
+            if kwargs["wonder"] and "wonderland" not in cur_domain:
+                cur_domain.append("wonderland")
+                post["domain"] = cur_domain
+            elif not kwargs["wonder"] and "wonderland" in cur_domain:
+                cur_domain.remove("wonderland")
+                post["domain"] = cur_domain
 
         # --- Auto-refresh activation time / 自动刷新激活时间 ---
         post["last_active"] = now_iso()
