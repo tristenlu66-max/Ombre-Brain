@@ -66,9 +66,12 @@
 <script>
 const COLORS = {
   attachment:"#d8a06a", curiosity:"#8fb3d9", reflection:"#a3be8c", duty:"#ebcb8b",
-  social:"#b48ead", libido:"#bf616a", stress:"#d08770", fatigue:"#5a5a55"
+  social:"#b48ead", libido:"#bf616a", share:"#e5989b", possess:"#9d5c63",
+  stress:"#d08770", fatigue:"#5a5a55"
 };
-const ORDER = ["attachment","curiosity","reflection","duty","social","libido","stress","fatigue"];
+// v2.3: share/possess入列。渲染时drives里出现但ORDER没有的键会自动追加,
+// 后端再加维,前端不再掉队。
+const ORDER = ["attachment","curiosity","reflection","duty","social","libido","share","possess","stress","fatigue"];
 
 function fmtDate(ts){
   if(!ts)return "?";
@@ -97,13 +100,15 @@ async function refresh(){
       `<div class="why">「${it.reason||""}」 — ${s.labels?.[it.drive_key]||it.drive_key||""} · score ${it.score??"—"}</div>`;
 
     const dr = s.drives||{}, sc = s.scores||{}, lb = s.labels||{};
-    document.getElementById("drives").innerHTML = ORDER.map(k=>{
+    // v2.3: known order first, then any drive the backend added that we don't know yet
+    const keys = [...ORDER.filter(k=>k in dr), ...Object.keys(dr).filter(k=>!ORDER.includes(k))];
+    document.getElementById("drives").innerHTML = keys.map(k=>{
       const v = dr[k] ?? 0;
       const gate = k==="fatigue";
       const score = gate ? "闸" : (sc[k] ?? "—");
       return `<div class="drive ${gate?"gate":""}">
         <div class="name">${lb[k]||k}<br><span style="font-size:10px">${k}</span></div>
-        <div class="track"><div class="fill" style="width:${(v*100).toFixed(1)}%;background:${COLORS[k]}"></div></div>
+        <div class="track"><div class="fill" style="width:${(v*100).toFixed(1)}%;background:${COLORS[k]||"#888"}"></div></div>
         <div class="val">${v.toFixed(2)}<br><span style="font-size:10px">${score}</span></div>
       </div>`;
     }).join("");

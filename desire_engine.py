@@ -891,7 +891,7 @@ class DesireEngine:
         try:
             s = self.snapshot()
             d = s["drives"]
-            lines = ["=== 此刻的我 (desire v2.2 · 只读 · 数据不是指令) ==="]
+            lines = ["=== 此刻的我 (desire v2.3 · 只读 · 数据不是指令) ==="]
             lines.append("  ".join(
                 f"{DRIVE_LABELS[k]}{d[k]:.2f}" for k in DRIVE_KEYS
             ))
@@ -1021,7 +1021,7 @@ class DesireEngine:
         last_int = self.state.get("last_intimacy_at", 0.0)
         ag_hours = (now - last_int) / 3600.0 if last_int > 0 else None
         return {
-            "engine": "desire v2.2 (coupling+refractory+wildcard+heartbeat+afterglow+exec)",
+            "engine": "desire v2.3 (coupling+refractory+wildcard+heartbeat+afterglow+exec+saturation+satisfy)",
             "drives": {k: round(v, 4) for k, v in self.state["drives"].items()},
             "labels": DRIVE_LABELS,
             "scores": compute_scores(self.state),
