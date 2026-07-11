@@ -10,8 +10,11 @@
 # register_tools() from server.py.
 # ============================================================
 
+import os
 import random
+import asyncio
 import logging
+from datetime import datetime
 
 from utils import strip_wikilinks, count_tokens_approx
 
@@ -64,6 +67,22 @@ def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
 # 内部辅助：检查是否可合并，可以则合并，否则新建
 # Shared by hold and grow to avoid duplicate logic
 # =============================================================
+def _auto_merge_enabled() -> bool:
+    """
+    刀一 · grow 绝育 (手术单 2026-07-11)
+    Env switch GROW_AUTO_MERGE, default FALSE: merge_or_create never
+    auto-merges — every hold/grow item becomes a NEW bucket, so
+    created_at ≈ event date and the timeline stays trustworthy.
+    Merge authority is returned to trace (human-in-the-loop).
+    Code below is kept intact, only skipped. Set GROW_AUTO_MERGE=true
+    to restore the old behavior.
+    合并权收归 trace（人工）。不删代码，只跳过。
+    """
+    return os.environ.get("GROW_AUTO_MERGE", "false").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+
+
 async def merge_or_create(
     content: str,
     tags: list,
@@ -76,12 +95,17 @@ async def merge_or_create(
     """
     Check if a similar bucket exists for merging; merge if so, create if not.
     Returns (bucket_id_or_name, is_merged).
+    NOTE 刀一: when GROW_AUTO_MERGE is false (default), the merge branch is
+    skipped entirely — this covers BOTH hold and grow, which share this helper.
     """
-    try:
-        existing = await _bucket_mgr.search(content, limit=1, domain_filter=domain or None)
-    except Exception as e:
-        logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
+    if not _auto_merge_enabled():
         existing = []
+    else:
+        try:
+            existing = await _bucket_mgr.search(content, limit=1, domain_filter=domain or None)
+        except Exception as e:
+            logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
+            existing = []
 
     if existing and existing[0].get("score", 0) > _config.get("merge_threshold", 75):
         bucket = existing[0]
@@ -140,8 +164,10 @@ async def breath(
     arousal: float = -1,
     max_results: int = 20,
     importance_min: int = -1,
+    since: str = "",
+    until: str = "",
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认12000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认12000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。since/until用ISO日期(如2026-06-01)开时间窗,语法同raw_search:空query+时间窗=窗口内桶按created_at正序(叙事顺序,wander桶排除,钉选不豁免);query+时间窗=窗口内检索。until含当天;只给一端=从since到现在/从最早到until。"""
     # Snapshot BEFORE on_interaction: the overnight attachment climb must be
     # visible, not erased by the act of looking.
     pre = None
@@ -154,6 +180,7 @@ async def breath(
         query=query, max_tokens=max_tokens, domain=domain,
         valence=valence, arousal=arousal,
         max_results=max_results, importance_min=importance_min,
+        since=since, until=until,
     )
     try:
         block = _desire_engine.state_block(pre)
@@ -164,6 +191,75 @@ async def breath(
     return result
 
 
+def _fire_hit_tracking(hit_ids: list) -> None:
+    """
+    刀二 · breath 命中埋点: fire-and-forget write-back scheduled AFTER the
+    reply is assembled. Never awaited on the main path; any failure — from
+    task creation to file write — is silent. Dedup preserves first-seen order.
+    回写失败静默吞掉，绝不阻塞 breath 主路径。
+    """
+    ids = [i for i in dict.fromkeys(hit_ids or []) if i]
+    if not ids:
+        return
+
+    async def _run():
+        try:
+            await _bucket_mgr.record_hits(ids)
+        except Exception:
+            pass
+
+    try:
+        asyncio.get_running_loop().create_task(_run())
+    except Exception:
+        pass
+
+
+def _parse_window_bound(s: str, end_of_day: bool):
+    """
+    刀三 · 时间窗: parse one ISO bound into a naive UTC datetime.
+    Storage (now_iso) is naive server-local = UTC on Render; tz-aware inputs
+    are converted to UTC then stripped. Date-only `until` → 23:59:59 (含当天).
+    Returns None for empty, "err" for unparseable.
+    """
+    from datetime import timezone as _tz
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return "err"
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(_tz.utc).replace(tzinfo=None)
+    if end_of_day and len(s) <= 10:
+        dt = dt.replace(hour=23, minute=59, second=59)
+    return dt
+
+
+def _bucket_created_dt(meta: dict):
+    """刀三: parse a bucket's created timestamp → naive UTC datetime, or None."""
+    from datetime import timezone as _tz
+    try:
+        dt = datetime.fromisoformat(str(meta.get("created", "")).replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(_tz.utc).replace(tzinfo=None)
+        return dt
+    except Exception:
+        return None
+
+
+def _is_wander_bucket(meta: dict) -> bool:
+    """
+    刀三 + wander隔离规则: 主题=wander、标签含wander、或标题含wander
+    的桶视为梦境素材,时间窗模式一律排除(wander有自己的分区)。
+    """
+    if any("wander" in str(d).lower() for d in (meta.get("domain") or [])):
+        return True
+    if any("wander" in str(t).lower() for t in (meta.get("tags") or [])):
+        return True
+    return "wander" in str(meta.get("name", "")).lower()
+
+
 async def _breath_core(
     query: str = "",
     max_tokens: int = 12000,
@@ -172,6 +268,8 @@ async def _breath_core(
     arousal: float = -1,
     max_results: int = 20,
     importance_min: int = -1,
+    since: str = "",
+    until: str = "",
 ) -> str:
     """Core retrieval logic for breath."""
     await _decay_engine.ensure_started()
@@ -179,6 +277,77 @@ async def _breath_core(
     _desire_engine.on_interaction("breath")
     max_results = min(max_results, 50)
     max_tokens = min(max_tokens, 20000)
+
+    # =============================================================
+    # 刀三 · 时间窗 (手术单 2026-07-11)
+    # =============================================================
+    dt_since = _parse_window_bound(since, end_of_day=False)
+    dt_until = _parse_window_bound(until, end_of_day=True)
+    if dt_since == "err" or dt_until == "err":
+        return f"时间格式无法解析(since={since!r}, until={until!r})。请用ISO日期,如 2026-06-01。"
+    if dt_since and dt_until and dt_since > dt_until:
+        return f"时间窗为空:since({since}) 晚于 until({until}),没有可返回的记忆。"
+    has_window = bool(dt_since or dt_until)
+
+    def _in_window(meta: dict) -> bool:
+        dt = _bucket_created_dt(meta)
+        if dt is None:
+            return False
+        if dt_since and dt < dt_since:
+            return False
+        if dt_until and dt > dt_until:
+            return False
+        return True
+
+    # --- Timeline mode: empty query + window → created_at ascending ---
+    # 叙事顺序,非权重序。钉选桶不豁免(窗口内没有就不出);wander一律排除。
+    # 含归档桶:时间窗是显式回看历史,被decay归档的桶也属于那段叙事。
+    if has_window and (not query or not query.strip()) and importance_min < 1:
+        try:
+            all_buckets = await _bucket_mgr.list_all(include_archive=True)
+        except Exception as e:
+            logger.error(f"Timeline list failed / 时间窗列桶失败: {e}")
+            return "记忆系统暂时无法访问。"
+        domain_filter_tl = {d.strip().lower() for d in domain.split(",") if d.strip()}
+        windowed = []
+        for b in all_buckets:
+            meta = b["metadata"]
+            if _is_wander_bucket(meta):
+                continue
+            if not _in_window(meta):
+                continue
+            if domain_filter_tl:
+                b_domains = {str(d).lower() for d in (meta.get("domain") or [])}
+                b_type = str(meta.get("type", "")).lower()
+                # domain="feel"/"note" are type-based channels elsewhere; honor both
+                if not (domain_filter_tl & b_domains) and b_type not in domain_filter_tl:
+                    continue
+            windowed.append(b)
+        if not windowed:
+            return f"窗口内没有记忆(since={since or '最早'}, until={until or '现在'})。"
+        windowed.sort(key=lambda b: b["metadata"].get("created", ""))
+        windowed = windowed[:max_results]
+        results = []
+        hit_ids = []
+        token_used = 0
+        for b in windowed:
+            try:
+                clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                t = count_tokens_approx(summary)
+                if token_used + t > max_tokens:
+                    break
+                created_label = str(b["metadata"].get("created", ""))[:16]
+                results.append(f"[{created_label}] [bucket_id:{b['id']}] {summary}")
+                hit_ids.append(b["id"])
+                token_used += t
+            except Exception as e:
+                logger.warning(f"Timeline dehydrate failed / 时间窗脱水失败: {e}")
+        if not results:
+            return f"窗口内没有记忆(since={since or '最早'}, until={until or '现在'})。"
+        _fire_hit_tracking(hit_ids)  # 刀二
+        header = f"=== 时间窗 {since or '最早'} → {until or '现在'} · created_at 正序 ==="
+        return header + "\n" + "\n---\n".join(results)
 
     # --- importance_min mode: bulk fetch by importance threshold ---
     if importance_min >= 1:
@@ -191,11 +360,18 @@ async def _breath_core(
             if int(b["metadata"].get("importance", 0)) >= importance_min
             and b["metadata"].get("type") not in ("feel", "note", "i")
         ]
+        # 刀三: importance_min + 时间窗 → 同样只看窗口内、排wander
+        if has_window:
+            filtered = [
+                b for b in filtered
+                if _in_window(b["metadata"]) and not _is_wander_bucket(b["metadata"])
+            ]
         filtered.sort(key=lambda b: int(b["metadata"].get("importance", 0)), reverse=True)
         filtered = filtered[:20]
         if not filtered:
             return f"没有重要度 >= {importance_min} 的记忆。"
         results = []
+        hit_ids = []  # 刀二: buckets that enter the returned content
         token_used = 0
         for b in filtered:
             if token_used >= max_tokens:
@@ -208,9 +384,12 @@ async def _breath_core(
                     break
                 imp = b["metadata"].get("importance", 0)
                 results.append(f"[importance:{imp}] [bucket_id:{b['id']}] {summary}")
+                hit_ids.append(b["id"])
                 token_used += t
             except Exception as e:
                 logger.warning(f"importance_min dehydrate failed: {e}")
+        if results:
+            _fire_hit_tracking(hit_ids)
         return "\n---\n".join(results) if results else "没有可以展示的记忆。"
 
     # --- No args or empty query: surfacing mode ---
@@ -301,12 +480,14 @@ async def _breath_core(
         )
 
         pinned_results = []
+        pinned_hit_ids = []  # 刀二: parallel to pinned_results, survives truncation below
         for b in surfacing_pinned:
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                 summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                 tier = f"L{_get_pin_level(b)}"
                 pinned_results.append(f"📌 [{tier}] [bucket_id:{b['id']}] {summary}")
+                pinned_hit_ids.append(b["id"])
             except Exception as e:
                 logger.warning(f"Failed to dehydrate pinned bucket: {e}")
 
@@ -319,14 +500,17 @@ async def _breath_core(
         if pinned_used > pinned_cap and pinned_results:
             # Truncate pinned results to fit within cap (keep L1 first)
             truncated = []
+            truncated_ids = []  # 刀二: only truly returned buckets count as hits
             used = 0
-            for pr in pinned_results:
+            for pr, pid in zip(pinned_results, pinned_hit_ids):
                 t = count_tokens_approx(pr)
                 if used + t > pinned_cap:
                     break
                 truncated.append(pr)
+                truncated_ids.append(pid)
                 used += t
             pinned_results = truncated
+            pinned_hit_ids = truncated_ids
             pinned_used = used
 
         token_budget = max_tokens - pinned_used
@@ -412,6 +596,7 @@ async def _breath_core(
         candidates = candidates[:max_results]
 
         dynamic_results = []
+        dynamic_hit_ids = []  # 刀二
         for b in candidates:
             if token_budget <= 0:
                 break
@@ -425,6 +610,7 @@ async def _breath_core(
                 is_recent = b["id"] in recent_new_ids
                 tag = "🕐 最近" if is_recent else f"权重:{score:.2f}"
                 dynamic_results.append(f"[{tag}] [bucket_id:{b['id']}] {summary}")
+                dynamic_hit_ids.append(b["id"])
                 token_budget -= summary_tokens
             except Exception as e:
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
@@ -461,11 +647,13 @@ async def _breath_core(
                     aspect_label = f" [{aspect_tag}]" if aspect_tag else ""
                     excerpt = strip_wikilinks(b["content"])[:300]
                     i_lines.append(f"🪞{ts}{aspect_label}\n{excerpt}")
+                    dynamic_hit_ids.append(b["id"])  # 刀二: I entries are returned content
                 if i_lines:
                     parts.append("=== I ===\n" + "\n\n".join(i_lines))
         except Exception as e:
             logger.warning(f"I auto-attach failed: {e}")
 
+        _fire_hit_tracking(pinned_hit_ids + dynamic_hit_ids)  # 刀二
         return "\n\n".join(parts)
 
     # --- Feel retrieval: domain="feel" is a special channel ---
@@ -477,12 +665,15 @@ async def _breath_core(
             if not feels:
                 return "没有留下过 feel。"
             results = []
+            hit_ids = []  # 刀二
             for f in feels:
                 created = f["metadata"].get("created", "")
                 entry = f"[{created}] [bucket_id:{f['id']}]\n{strip_wikilinks(f['content'])}"
                 results.append(entry)
+                hit_ids.append(f["id"])
                 if count_tokens_approx("\n---\n".join(results)) > max_tokens:
                     break
+            _fire_hit_tracking(hit_ids)
             return "=== 你留下的 feel ===\n" + "\n---\n".join(results)
         except Exception as e:
             logger.error(f"Feel retrieval failed: {e}")
@@ -497,13 +688,16 @@ async def _breath_core(
             if not notes:
                 return "鸿湍还没有写过笔记。"
             results = []
+            hit_ids = []  # 刀二
             for n in notes:
                 created = n["metadata"].get("created", "")
                 name = n["metadata"].get("name", n["id"])
                 entry = f"[{created}] [{name}] [bucket_id:{n['id']}]\n{strip_wikilinks(n['content'])}"
                 results.append(entry)
+                hit_ids.append(n["id"])
                 if count_tokens_approx("\n---\n".join(results)) > max_tokens:
                     break
+            _fire_hit_tracking(hit_ids)
             return "=== 鸿湍的笔记 ===\n" + "\n---\n".join(results)
         except Exception as e:
             logger.error(f"Note retrieval failed: {e}")
@@ -544,7 +738,17 @@ async def _breath_core(
     except Exception as e:
         logger.warning(f"Vector search failed, using keyword only / 向量搜索失败: {e}")
 
+    # --- 刀三: query + 时间窗 → 只保留窗口内、非wander的结果 ---
+    if has_window:
+        matches = [
+            b for b in matches
+            if _in_window(b["metadata"]) and not _is_wander_bucket(b["metadata"])
+        ]
+        if not matches:
+            return f"窗口内({since or '最早'} → {until or '现在'})没有与「{query}」相关的记忆。"
+
     results = []
+    hit_ids = []  # 刀二
     token_used = 0
     for bucket in matches:
         if token_used >= max_tokens:
@@ -566,13 +770,15 @@ async def _breath_core(
             else:
                 summary = f"[bucket_id:{bucket['id']}] {summary}"
             results.append(summary)
+            hit_ids.append(bucket["id"])
             token_used += summary_tokens
         except Exception as e:
             logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
             continue
 
     # --- Random surfacing: when search returns < 3, 40% chance to float old memories ---
-    if len(matches) < 3 and random.random() < 0.4:
+    # 刀三: disabled in window mode — drifted buckets would leak outside the window
+    if not has_window and len(matches) < 3 and random.random() < 0.4:
         try:
             all_buckets = await _bucket_mgr.list_all(include_archive=False)
             matched_ids = {b["id"] for b in matches}
@@ -588,6 +794,7 @@ async def _breath_core(
                     clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
                     summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
                     drift_results.append(f"[surface_type: random]\n{summary}")
+                    hit_ids.append(b["id"])  # 刀二: drifted buckets are returned content
                 results.append("--- 忽然想起来 ---\n" + "\n---\n".join(drift_results))
         except Exception as e:
             logger.warning(f"Random surfacing failed / 随机浮现失败: {e}")
@@ -596,6 +803,7 @@ async def _breath_core(
         await _fire_webhook("breath", {"mode": "empty", "matches": 0})
         return "未找到相关记忆。"
 
+    _fire_hit_tracking(hit_ids)  # 刀二
     final_text = "\n---\n".join(results)
     await _fire_webhook("breath", {"mode": "ok", "matches": len(matches), "chars": len(final_text)})
     return final_text

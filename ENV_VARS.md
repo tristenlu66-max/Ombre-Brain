@@ -44,3 +44,8 @@
 ```
 
 Webhook 推送失败仅在服务日志中以 WARNING 级别记录，**不会影响 MCP 工具的正常返回**。
+
+## GROW_AUTO_MERGE (刀一 · 2026-07-11)
+- Default: `false`
+- `false`: hold/grow 永不自动合并，一律新建桶（created_at ≈ 事件日期，时间轴可信；合并权收归 trace 人工）。
+- `true`: 恢复旧行为（相似度 > merge_threshold 时并入旧桶）。

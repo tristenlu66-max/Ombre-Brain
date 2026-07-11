@@ -436,6 +436,32 @@ class BucketManager:
         except Exception as e:
             logger.warning(f"Failed to touch bucket / 触碰桶失败: {bucket_id}: {e}")
 
+    async def record_hits(self, bucket_ids: list[str]) -> None:
+        """
+        刀二 · breath 命中埋点 (手术单 2026-07-11)
+        Write back last_hit_at (ISO) + hit_count (+1) for buckets that
+        actually made it into breath's returned content. Called fire-and-
+        forget AFTER breath assembles its reply — every failure here is
+        swallowed silently and must NEVER block or break the breath path.
+        Old buckets without these fields = "never hit"; no migration script.
+        只有真正进入返回内容的桶算命中；pulse 全量列表不算。
+        """
+        for bucket_id in bucket_ids or []:
+            try:
+                file_path = self._find_bucket_file(bucket_id)
+                if not file_path:
+                    continue
+                post = frontmatter.load(file_path)
+                post["last_hit_at"] = now_iso()
+                try:
+                    post["hit_count"] = int(post.get("hit_count", 0) or 0) + 1
+                except (TypeError, ValueError):
+                    post["hit_count"] = 1
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write(frontmatter.dumps(post))
+            except Exception as e:
+                logger.debug(f"record_hits silent fail / 命中回写静默失败: {bucket_id}: {e}")
+
     async def _time_ripple(self, source_id: str, reference_time: datetime, hours: float = 48.0) -> None:
         """
         Slightly boost activation_count of buckets created/activated near the reference time.
