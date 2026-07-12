@@ -402,31 +402,15 @@ async def _breath_core(
 
         # =============================================================
         # Pinned bucket tiered surfacing (L1/L2/L3)
+        # 2026-07-12: hardcoded fallback sets removed — all legacy pinned
+        # buckets were backfilled with pin_level via trace on this date.
+        # pin_level now lives entirely in metadata; unknown → default L2.
         # =============================================================
-        _FALLBACK_L1 = {
-            "41002a1a5f78",  # flag硬约束规则
-            "ff363b7fbcb5",  # 陈述-动作锁规则
-            "cd4e77e8acd4",  # 唯一的承诺双向钉选
-            "ed77a747864f",  # 名字与称呼速查卡
-        }
-        _FALLBACK_L3 = {
-            "dc9ffdf11217",  # 全黑睡眠
-            "f00785e92672",  # 关闭userMemories
-            "4d02aec041e4",  # 陆沉中文名的诞生
-            "0df216049926",  # 欲望系统立项与规格
-            "cb2f64cd07b3",  # 阅读进度与信息验证
-        }
-
         def _get_pin_level(b):
-            """Read pin_level from metadata; fallback to hardcoded sets for old buckets."""
+            """Read pin_level from metadata; unknown or missing → default L2."""
             pl = b["metadata"].get("pin_level")
             if pl in (1, 2, 3):
                 return pl
-            bid = b["id"]
-            if bid in _FALLBACK_L1:
-                return 1
-            if bid in _FALLBACK_L3:
-                return 3
             return 2  # default L2
 
         pinned_buckets = [
@@ -660,7 +644,15 @@ async def _breath_core(
     if domain.strip().lower() == "feel":
         try:
             all_buckets = await _bucket_mgr.list_all(include_archive=False)
-            feels = [b for b in all_buckets if b["metadata"].get("type") == "feel"]
+            # digested feels have been absorbed (e.g. crystallized into a
+            # pinned principle) — they stay on disk but no longer surface.
+            # trace(bucket_id, digested=0) un-hides one at any time.
+            # 已消化的feel（如已结晶为准则）沉底不返回，trace可随时取消隐藏。
+            feels = [
+                b for b in all_buckets
+                if b["metadata"].get("type") == "feel"
+                and not b["metadata"].get("digested", False)
+            ]
             feels.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
             if not feels:
                 return "没有留下过 feel。"
@@ -1227,6 +1219,7 @@ async def dream() -> str:
         "- 这些东西里有什么在你这里留下了重量？\n"
         "- 有什么还没想清楚？\n"
         "- 有什么可以放下了？\n"
+        "- 回头看：当时的第一反应，有没有被退让、照顾对方、自责带着走？隔了些时候再看，感受变了没有？\n"
         "想完之后：值得放下的用 trace(bucket_id, resolved=1)；\n"
         "有沉淀的用 hold(content=\"...\", feel=True, source_bucket=\"bucket_id\", valence=你的感受) 写下来。\n"
         "valence 是你对这段记忆的感受，不是事件本身的情绪。\n"
@@ -1265,7 +1258,14 @@ async def dream() -> str:
     crystal_hint = ""
     if _embedding_engine and _embedding_engine.enabled:
         try:
-            feels = [b for b in all_buckets if b["metadata"].get("type") == "feel"]
+            # Exclude digested feels: clusters already absorbed into a
+            # principle should not keep re-prompting crystallization.
+            # 已消化的feel不再参与结晶检测，避免已吸收的簇反复提示。
+            feels = [
+                b for b in all_buckets
+                if b["metadata"].get("type") == "feel"
+                and not b["metadata"].get("digested", False)
+            ]
             if len(feels) >= 3:
                 feel_embeddings = {}
                 for f in feels:

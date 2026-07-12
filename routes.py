@@ -905,7 +905,7 @@ async def api_system_status(request):
                 "total": stats.get("permanent_count", 0) + stats.get("dynamic_count", 0),
             },
             "using_env_password": bool(os.environ.get("OMBRE_DASHBOARD_PASSWORD", "")),
-            "version": "1.3.0",
+            "version": "1.7.0",
         })
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
