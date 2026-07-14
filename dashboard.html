@@ -1405,7 +1405,7 @@ async function processConvJson(file){
         events.push({
           source_event_id:String(msg.uuid||msg.id||''),
           role:sender==='human'||sender==='user'?'user':'assistant',
-          text, created_at:String(msg.created_at||msg.create_time||''),
+          text:txt, created_at:String(msg.created_at||msg.create_time||''),
           conversation_id:convId,
           metadata:convName?{conversation_name:convName}:{},
         });
