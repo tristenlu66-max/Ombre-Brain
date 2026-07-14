@@ -100,18 +100,19 @@ body {
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
 }
 .top-bar .spacer { flex:1; }
-.search-box {
-  display:flex; align-items:center; gap:6px;
-  background:var(--bg2); border:1px solid var(--border);
-  border-radius:20px; padding:6px 14px;
-  max-width:280px; flex:1;
+.search-bar {
+  position:sticky; top:53px; z-index:49;
+  display:none; align-items:center; gap:8px;
+  padding:8px 16px;
+  background:var(--bg); border-bottom:1px solid var(--border);
 }
-.search-box input {
-  border:none; background:none; color:var(--text);
-  font-size:13px; width:100%; outline:none;
-  font-family:inherit;
+.search-bar.open { display:flex; }
+.search-bar input {
+  flex:1; border:1px solid var(--border); background:var(--bg2);
+  color:var(--text); border-radius:20px; padding:8px 16px;
+  font-size:14px; outline:none; font-family:inherit;
 }
-.search-box input::placeholder { color:var(--text-tertiary); }
+.search-bar input::placeholder { color:var(--text-tertiary); }
 .icon-btn {
   width:34px; height:34px; border-radius:50%;
   border:1px solid var(--border); background:var(--bg2);
@@ -509,7 +510,6 @@ body {
   .top-bar { margin-left:72px; }
   .page { margin-left:72px; padding:20px 28px; }
   .detail-drawer { right:0; }
-  .search-box { max-width:320px; }
 }
 
 /* ===== Empty state ===== */
@@ -546,14 +546,15 @@ body {
 
 <!-- Top Bar -->
 <div class="top-bar">
-  <h1>◐ Ombre</h1>
+  <h1 id="top-title">◐ Ombre</h1>
   <span class="stats" id="stats"></span>
   <span class="spacer"></span>
-  <div class="search-box">
-    <span style="font-size:14px;color:var(--text-tertiary);">⌕</span>
-    <input type="text" id="search-input" data-i18n-ph="search_placeholder">
-  </div>
+  <button class="icon-btn" id="search-toggle" onclick="toggleSearch()" title="Search">⌕</button>
   <button class="icon-btn" onclick="toggleTheme()" title="Theme">◐</button>
+</div>
+<div class="search-bar" id="search-bar">
+  <input type="text" id="search-input" data-i18n-ph="search_placeholder">
+  <button class="icon-btn" onclick="toggleSearch()" style="flex-shrink:0;">✕</button>
 </div>
 
 <!-- Bottom Nav -->
@@ -1092,6 +1093,12 @@ function renderBuckets(bk){
 }
 
 // Search
+function toggleSearch(){
+  const bar=document.getElementById('search-bar');
+  const isOpen=bar.classList.toggle('open');
+  if(isOpen) { document.getElementById('search-input').focus(); }
+  else { document.getElementById('search-input').value=''; renderBuckets(filterBuckets(allBuckets)); }
+}
 let searchTimer;
 document.getElementById('search-input').addEventListener('input',e=>{
   clearTimeout(searchTimer);
