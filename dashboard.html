@@ -1365,11 +1365,26 @@ async function processConvJson(file){
   const statusEl=document.getElementById('vault-upload-status');
   prog.style.display='block';
   statusEl.textContent=t('vault_processing');
-  bar.style.width='10%'; insEl.textContent='0'; dupEl.textContent='0';
+  bar.style.width='5%'; insEl.textContent='0'; dupEl.textContent='0';
 
   try{
-    const text=await file.text();
-    const data=JSON.parse(text);
+    // Read file in chunks to avoid mobile string length limits
+    statusEl.textContent=LANG==='zh'?'读取文件…':'Reading file…';
+    const CHUNK=2*1024*1024; // 2MB chunks
+    const totalSize=file.size;
+    let textParts=[];
+    for(let offset=0;offset<totalSize;offset+=CHUNK){
+      const slice=file.slice(offset,Math.min(offset+CHUNK,totalSize));
+      const buf=await slice.arrayBuffer();
+      textParts.push(new TextDecoder('utf-8').decode(buf));
+      bar.style.width=Math.round(5+15*offset/totalSize)+'%';
+    }
+    statusEl.textContent=LANG==='zh'?'解析中…':'Parsing…';
+    bar.style.width='20%';
+    const fullText=textParts.join('');
+    textParts=null; // free memory
+    const data=JSON.parse(fullText);
+
     // Parse claude.ai export format (same logic as backfill_raw.py)
     const conversations=Array.isArray(data)?data:[data];
     let events=[];
@@ -1396,9 +1411,9 @@ async function processConvJson(file){
         });
       }
     }
-    statusEl.textContent=`${events.length} messages parsed`;
+    statusEl.textContent=`${events.length} ${LANG==='zh'?'条消息已解析':'messages parsed'}`;
     bar.style.width='30%';
-    if(!events.length){ statusEl.textContent='No messages found'; return; }
+    if(!events.length){ statusEl.textContent=LANG==='zh'?'未找到消息':'No messages found'; return; }
 
     // Send in batches
     const BATCH=400; let inserted=0, duplicate=0;
@@ -1415,7 +1430,7 @@ async function processConvJson(file){
       insEl.textContent=inserted; dupEl.textContent=duplicate;
       bar.style.width=Math.round(30+70*Math.min((i+BATCH)/events.length,1))+'%';
     }
-    statusEl.textContent=`✓ Done — ${inserted} new, ${duplicate} duplicate`;
+    statusEl.textContent=`✓ ${LANG==='zh'?'完成':'Done'} — ${inserted} ${LANG==='zh'?'新入':'new'}, ${duplicate} ${LANG==='zh'?'已有':'duplicate'}`;
     bar.style.width='100%';
   }catch(e){
     statusEl.textContent='Error: '+e.message;
