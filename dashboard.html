@@ -16,13 +16,13 @@
   --text: #1A1A1A;
   --text-secondary: #6B6B6B;
   --text-tertiary: #9E9E9E;
-  --accent: #2D5A5A;
-  --accent-light: #3A7070;
-  --accent-subtle: rgba(45,90,90,0.08);
+  --accent: #6B2D3E;
+  --accent-light: #874055;
+  --accent-subtle: rgba(107,45,62,0.08);
   --feel: #8B5E83;
   --feel-subtle: rgba(139,94,131,0.08);
-  --note: #9A6B4A;
-  --note-subtle: rgba(154,107,74,0.08);
+  --note: #C4A68C;
+  --note-subtle: rgba(196,166,140,0.10);
   --wander: #5B6FA6;
   --wander-subtle: rgba(91,111,166,0.08);
   --self-i: #6B8E6B;
@@ -32,11 +32,11 @@
   --positive: #4A7C59;
   --negative: #A85454;
   --warning: #B8860B;
-  --v-cold: #7B9EC7;
-  --v-cool: #8CB5A0;
-  --v-neutral: #C4B894;
-  --v-warm: #D4A574;
-  --v-hot: #D4896A;
+  --v-cold: #6B8DB5;
+  --v-cool: #7DB88A;
+  --v-neutral: #C8DAE0;
+  --v-warm: #C4B0D4;
+  --v-hot: #E8ACAD;
   --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03);
   --shadow-lg: 0 4px 16px rgba(0,0,0,0.06), 0 12px 40px rgba(0,0,0,0.04);
   --radius: 14px;
@@ -59,8 +59,8 @@
   --accent-subtle: rgba(91,168,168,0.1);
   --feel: #B88CB0;
   --feel-subtle: rgba(184,140,176,0.1);
-  --note: #C4956E;
-  --note-subtle: rgba(196,149,110,0.1);
+  --note: #D4B8A0;
+  --note-subtle: rgba(212,184,160,0.1);
   --wander: #8B9FD4;
   --wander-subtle: rgba(139,159,212,0.1);
   --self-i: #8CB88C;
@@ -829,7 +829,7 @@ const I18N = {
     detail_id:"ID", detail_type:"类型", detail_domain:"域", detail_tags:"标签",
     detail_valence:"效价", detail_arousal:"唤醒度", detail_importance:"重要度",
     detail_score:"权重", detail_created:"创建", detail_active:"最后活跃",
-    detail_resolved:"已解决", detail_digested:"已消化", detail_pinned:"钉选",
+    detail_resolved:"已解决", detail_digested:"已消化", detail_pinned:"钉选", detail_bot_visible:"Bot 可见",
     just_now:"刚刚", hours_ago:"%dh前", days_ago:"%dd前", months_ago:"%dmo前",
     weekdays:["日","一","二","三","四","五","六"],
     months:["一月","二月","三月","四月","五月","六月","七月","八月","九月","十月","十一月","十二月"],
@@ -864,7 +864,7 @@ const I18N = {
     detail_id:"ID", detail_type:"Type", detail_domain:"Domain", detail_tags:"Tags",
     detail_valence:"Valence", detail_arousal:"Arousal", detail_importance:"Importance",
     detail_score:"Score", detail_created:"Created", detail_active:"Last Active",
-    detail_resolved:"Resolved", detail_digested:"Digested", detail_pinned:"Pinned",
+    detail_resolved:"Resolved", detail_digested:"Digested", detail_pinned:"Pinned", detail_bot_visible:"Bot visible",
     just_now:"just now", hours_ago:"%dh ago", days_ago:"%dd ago", months_ago:"%dmo ago",
     weekdays:["Sun","Mon","Tue","Wed","Thu","Fri","Sat"],
     months:["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],
@@ -1045,6 +1045,7 @@ function typeTag(b){
   if(b.type==='feel') return `<span class="card-tag tag-feel">feel</span>`;
   if(b.type==='note') return `<span class="card-tag tag-note">${LANG==='zh'?'笔记':'note'}</span>`;
   if(b.type==='i') return `<span class="card-tag tag-i">I</span>`;
+  if((b.domain||[]).includes('wonderland')) return `<span class="card-tag tag-wander">wonderland</span>`;
   if((b.domain||[]).includes('wander')) return `<span class="card-tag tag-wander">wander</span>`;
   return `<span class="card-tag tag-dynamic">${b.type||'dynamic'}</span>`;
 }
@@ -1129,6 +1130,16 @@ async function showDetail(id){
         <div class="detail-field"><div class="detail-label">${t('detail_created')}</div>${(m.created||'—').substring(0,16)}</div>
         <div class="detail-field"><div class="detail-label">${t('detail_active')}</div>${(m.last_active||'—').substring(0,16)}</div>
       </div>
+      ${m.pinned?`<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;background:var(--bg2);border-radius:var(--radius-sm);">
+        <span style="font-size:13px;color:var(--text-secondary);">${t('detail_bot_visible')}</span>
+        <span style="flex:1;"></span>
+        <label style="position:relative;width:44px;height:24px;cursor:pointer;">
+          <input type="checkbox" id="bot-vis-toggle" ${m.bot_visible?'checked':''} onchange="toggleBotVisible('${id}',this.checked)" style="opacity:0;width:0;height:0;">
+          <span style="position:absolute;inset:0;border-radius:12px;background:${m.bot_visible?'var(--accent)':'var(--border-strong)'};transition:background .2s;">
+            <span style="position:absolute;top:2px;left:${m.bot_visible?'22px':'2px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></span>
+          </span>
+        </label>
+      </div>`:''}
       <div class="detail-body"${m.type==='note'?" style=\"font-family:'Cormorant Garamond',serif;\"":""}>${esc(b.content)}</div>
     `;
   }catch(e){ dc.innerHTML='<div class="loading">Error: '+e.message+'</div>'; }
@@ -1138,6 +1149,11 @@ function closeDetail(){
   document.getElementById('detail-drawer').classList.remove('open');
 }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
+async function toggleBotVisible(id,val){
+  try{
+    await fetch(BASE+'/api/bot-visible',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bucket_id:id,bot_visible:val})});
+  }catch(e){ console.error(e); }
+}
 
 // ============================
 // Calendar
