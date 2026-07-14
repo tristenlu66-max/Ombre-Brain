@@ -16,13 +16,13 @@
   --text: #1A1A1A;
   --text-secondary: #6B6B6B;
   --text-tertiary: #9E9E9E;
-  --accent: #6B2D3E;
-  --accent-light: #874055;
-  --accent-subtle: rgba(107,45,62,0.08);
+  --accent: #7A2E2E;
+  --accent-light: #944040;
+  --accent-subtle: rgba(122,46,46,0.08);
   --feel: #8B5E83;
   --feel-subtle: rgba(139,94,131,0.08);
-  --note: #C4A68C;
-  --note-subtle: rgba(196,166,140,0.10);
+  --note: #D4A999;
+  --note-subtle: rgba(212,169,153,0.10);
   --wander: #5B6FA6;
   --wander-subtle: rgba(91,111,166,0.08);
   --self-i: #6B8E6B;
@@ -32,11 +32,11 @@
   --positive: #4A7C59;
   --negative: #A85454;
   --warning: #B8860B;
-  --v-cold: #6B8DB5;
-  --v-cool: #7DB88A;
-  --v-neutral: #C8DAE0;
-  --v-warm: #C4B0D4;
-  --v-hot: #E8ACAD;
+  --v-cold: #8BA4BE;
+  --v-cool: #9DC4A0;
+  --v-neutral: #E4E8EA;
+  --v-warm: #D6CBE0;
+  --v-hot: #E8B8B8;
   --shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.03);
   --shadow-lg: 0 4px 16px rgba(0,0,0,0.06), 0 12px 40px rgba(0,0,0,0.04);
   --radius: 14px;
@@ -59,8 +59,8 @@
   --accent-subtle: rgba(91,168,168,0.1);
   --feel: #B88CB0;
   --feel-subtle: rgba(184,140,176,0.1);
-  --note: #D4B8A0;
-  --note-subtle: rgba(212,184,160,0.1);
+  --note: #DBBCB0;
+  --note-subtle: rgba(219,188,176,0.1);
   --wander: #8B9FD4;
   --wander-subtle: rgba(139,159,212,0.1);
   --self-i: #8CB88C;
@@ -952,12 +952,14 @@ document.querySelectorAll('.nav-item').forEach(item=>{
   });
 });
 function switchMore(sub){
-  document.querySelectorAll('[data-more]').forEach(c=>{
-    if(c.classList.contains('cat-chip')){
-      c.classList.toggle('active', c.dataset.more===sub);
-    } else {
-      c.classList.toggle('hidden', c.id!=='more-'+sub);
-    }
+  // Toggle chip active states
+  document.querySelectorAll('.cat-chip[data-more]').forEach(c=>{
+    c.classList.toggle('active', c.dataset.more===sub);
+  });
+  // Toggle content divs
+  ['settings','breath','config','import'].forEach(s=>{
+    const el=document.getElementById('more-'+s);
+    if(el) el.classList.toggle('hidden', s!==sub);
   });
   if(sub==='config') loadConfig();
 }
@@ -1133,15 +1135,13 @@ async function showDetail(id){
       ${m.pinned?`<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;padding:10px 14px;background:var(--bg2);border-radius:var(--radius-sm);">
         <span style="font-size:13px;color:var(--text-secondary);">${t('detail_bot_visible')}</span>
         <span style="flex:1;"></span>
-        <label style="position:relative;width:44px;height:24px;cursor:pointer;">
-          <input type="checkbox" id="bot-vis-toggle" ${m.bot_visible?'checked':''} onchange="toggleBotVisible('${id}',this.checked)" style="opacity:0;width:0;height:0;">
-          <span style="position:absolute;inset:0;border-radius:12px;background:${m.bot_visible?'var(--accent)':'var(--border-strong)'};transition:background .2s;">
-            <span style="position:absolute;top:2px;left:${m.bot_visible?'22px':'2px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></span>
-          </span>
-        </label>
+        <div id="bot-vis-toggle" onclick="toggleBotVisible('${id}')" style="position:relative;width:44px;height:24px;border-radius:12px;cursor:pointer;background:${m.bot_visible?'var(--accent)':'var(--border-strong)'};transition:background .2s;">
+          <span style="position:absolute;top:2px;left:${m.bot_visible?'22':'2'}px;width:20px;height:20px;border-radius:50%;background:#fff;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></span>
+        </div>
       </div>`:''}
       <div class="detail-body"${m.type==='note'?" style=\"font-family:'Cormorant Garamond',serif;\"":""}>${esc(b.content)}</div>
     `;
+    if(m.pinned) _botVisState[id]=!!m.bot_visible;
   }catch(e){ dc.innerHTML='<div class="loading">Error: '+e.message+'</div>'; }
 }
 function closeDetail(){
@@ -1149,9 +1149,17 @@ function closeDetail(){
   document.getElementById('detail-drawer').classList.remove('open');
 }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
-async function toggleBotVisible(id,val){
+let _botVisState={};
+async function toggleBotVisible(id){
+  const el=document.getElementById('bot-vis-toggle'); if(!el) return;
+  const newVal=!_botVisState[id];
+  _botVisState[id]=newVal;
+  // Update visual
+  el.style.background=newVal?'var(--accent)':'var(--border-strong)';
+  el.querySelector('span').style.left=newVal?'22px':'2px';
   try{
-    await fetch(BASE+'/api/bot-visible',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bucket_id:id,bot_visible:val})});
+    const r=await fetch(BASE+'/api/bot-visible',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bucket_id:id,bot_visible:newVal})});
+    if(!r.ok){ _botVisState[id]=!newVal; el.style.background=!newVal?'var(--accent)':'var(--border-strong)'; el.querySelector('span').style.left=!newVal?'22px':'2px'; }
   }catch(e){ console.error(e); }
 }
 
