@@ -1019,8 +1019,9 @@ async def trace(
     content: str = "",
     delete: bool = False,
     wonder: int = -1,
+    find_replace: str = "",
 ) -> str:
-    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,pin_level=1必出/2场景触发/3背景轮换(仅pinned桶),digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文,delete=True删除,wonder=1送入wonderland/0移出。只传需改的,-1或空=不改。"""
+    """修改记忆元数据或内容。resolved=1沉底/0激活,pinned=1钉选/0取消,pin_level=1必出/2场景触发/3背景轮换(仅pinned桶),digested=1隐藏(保留但不浮现)/0取消隐藏,content=替换桶正文(全量覆盖,慎用),find_replace=局部替换(格式'旧文本|||新文本',只替换第一次出现,不覆盖全文),delete=True删除,wonder=1送入wonderland/0移出。只传需改的,-1或空=不改。"""
 
     if not bucket_id or not bucket_id.strip():
         return "请提供有效的 bucket_id。"
@@ -1063,7 +1064,16 @@ async def trace(
         updates["digested"] = bool(digested)
     if wonder in (0, 1):
         updates["wonder"] = bool(wonder)
-    if content:
+    if find_replace and "|||" in find_replace:
+        parts = find_replace.split("|||", 1)
+        old_text = parts[0]
+        new_text = parts[1] if len(parts) > 1 else ""
+        current_content = bucket.get("content", "")
+        if old_text and old_text in current_content:
+            updates["content"] = current_content.replace(old_text, new_text, 1)
+        else:
+            return f"find_replace失败: 未在桶 {bucket_id} 正文中找到指定文本。"
+    elif content:
         updates["content"] = content
 
     if not updates:

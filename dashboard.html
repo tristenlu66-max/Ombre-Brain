@@ -23,6 +23,8 @@
   --feel-subtle: rgba(139,94,131,0.08);
   --note: #D4A999;
   --note-subtle: rgba(212,169,153,0.10);
+  --tides: #C9909A;
+  --tides-subtle: rgba(201,144,154,0.10);
   --wander: #5B6FA6;
   --wander-subtle: rgba(91,111,166,0.08);
   --self-i: #6B8E6B;
@@ -61,6 +63,8 @@
   --feel-subtle: rgba(184,140,176,0.1);
   --note: #DBBCB0;
   --note-subtle: rgba(219,188,176,0.1);
+  --tides: #D4A0AA;
+  --tides-subtle: rgba(212,160,170,0.1);
   --wander: #8B9FD4;
   --wander-subtle: rgba(139,159,212,0.1);
   --self-i: #8CB88C;
@@ -177,6 +181,7 @@ body {
 .cat-chip[data-cat="feel"].active { background:var(--feel); }
 .cat-chip[data-cat="note"].active { background:var(--note); }
 .cat-chip[data-cat="i"].active { background:var(--self-i); }
+.cat-chip[data-cat="tides"].active { background:var(--tides); }
 .cat-chip[data-cat="wander"].active { background:var(--wander); }
 .cat-chip[data-cat="archived"].active { background:var(--text-tertiary); }
 
@@ -198,6 +203,7 @@ body {
 .bucket-card[data-type="feel"]::before { background:var(--feel); }
 .bucket-card[data-type="note"]::before { background:var(--note); }
 .bucket-card[data-type="i"]::before { background:var(--self-i); }
+.bucket-card[data-type="tides"]::before { background:var(--tides); }
 .bucket-card[data-type="wander"]::before,.bucket-card[data-type="wonderland"]::before { background:var(--wander); }
 .bucket-card[data-type="archived"]::before { background:var(--text-tertiary); }
 
@@ -804,7 +810,7 @@ const I18N = {
     search_placeholder:"搜索记忆…", loading:"加载中…",
     nav_buckets:"记忆桶", nav_calendar:"日历", nav_timeline:"时间线", nav_vault:"保险箱", nav_more:"更多",
     cat_all:"全部", cat_pinned:"📌 钉选", cat_dynamic:"💭 动态", cat_feel:"🫧 感受",
-    cat_note:"📝 笔记", cat_i:"🪞 自我", cat_wander:"🌙 漫步", cat_archived:"📦 归档",
+    cat_note:"📝 笔记", cat_i:"🪞 自我", cat_tides:"🌊 云雨", cat_wander:"🌙 漫步", cat_archived:"📦 归档",
     timeline_title:"时间线", vault_title:"原文保险箱",
     vault_quick_entry:"快速存入", vault_placeholder:"在此输入原文…",
     vault_note_ph:"备注（可选）", vault_save:"存入",
@@ -839,7 +845,7 @@ const I18N = {
     search_placeholder:"Search memories…", loading:"Loading…",
     nav_buckets:"Buckets", nav_calendar:"Calendar", nav_timeline:"Timeline", nav_vault:"Vault", nav_more:"More",
     cat_all:"All", cat_pinned:"📌 Pinned", cat_dynamic:"💭 Dynamic", cat_feel:"🫧 Feel",
-    cat_note:"📝 Notes", cat_i:"🪞 Self", cat_wander:"🌙 Wander", cat_archived:"📦 Archived",
+    cat_note:"📝 Notes", cat_i:"🪞 Self", cat_tides:"🌊 Tides", cat_wander:"🌙 Wander", cat_archived:"📦 Archived",
     timeline_title:"Timeline", vault_title:"Raw Vault",
     vault_quick_entry:"Quick Entry", vault_placeholder:"Enter the original text…",
     vault_note_ph:"Note (optional)", vault_save:"Save",
@@ -996,7 +1002,7 @@ function buildCatBar(){
     {key:'all',label:t('cat_all')}, {key:'pinned',label:t('cat_pinned')},
     {key:'dynamic',label:t('cat_dynamic')}, {key:'feel',label:t('cat_feel')},
     {key:'note',label:t('cat_note')}, {key:'i',label:t('cat_i')},
-    {key:'wander',label:t('cat_wander')}, {key:'archived',label:t('cat_archived')},
+    {key:'tides',label:t('cat_tides')}, {key:'wander',label:t('cat_wander')}, {key:'archived',label:t('cat_archived')},
   ];
   document.getElementById('cat-bar').innerHTML = cats.map(c=>
     `<div class="cat-chip${c.key===currentCat?' active':''}" data-cat="${c.key}">${c.label}</div>`
@@ -1018,6 +1024,7 @@ function filterBuckets(bk){
   if(currentCat==='feel') return bk.filter(b=>b.type==='feel');
   if(currentCat==='note') return bk.filter(b=>b.type==='note');
   if(currentCat==='i') return bk.filter(b=>b.type==='i');
+  if(currentCat==='tides') return bk.filter(b=>(b.domain||[]).some(d=>d==='tides'));
   if(currentCat==='wander') return bk.filter(b=>(b.domain||[]).some(d=>d==='wander'||d==='wonderland'));
   if(currentCat==='archived') return bk.filter(b=>b.type==='archived'||b.resolved);
   return bk;
@@ -1036,6 +1043,7 @@ function typeIcon(b){
   if(b.type==='feel') return '🫧';
   if(b.type==='note') return '📝';
   if(b.type==='i') return '🪞';
+  if((b.domain||[]).includes('tides')) return '🌊';
   if((b.domain||[]).includes('wonderland')) return '✦';
   if((b.domain||[]).includes('wander')) return '🌙';
   if(b.digested) return '🌿';
@@ -1048,6 +1056,7 @@ function typeTag(b){
   if(b.type==='feel') return `<span class="card-tag tag-feel">feel</span>`;
   if(b.type==='note') return `<span class="card-tag tag-note">${LANG==='zh'?'笔记':'note'}</span>`;
   if(b.type==='i') return `<span class="card-tag tag-i">I</span>`;
+  if((b.domain||[]).includes('tides')) return `<span class="card-tag" style="background:var(--tides-subtle);color:var(--tides);">tides</span>`;
   if((b.domain||[]).includes('wonderland')) return `<span class="card-tag tag-wander">wonderland</span>`;
   if((b.domain||[]).includes('wander')) return `<span class="card-tag tag-wander">wander</span>`;
   return `<span class="card-tag tag-dynamic">${b.type||'dynamic'}</span>`;
@@ -1055,6 +1064,7 @@ function typeTag(b){
 
 function dataType(b){
   if(b.pinned) return 'pinned';
+  if((b.domain||[]).includes('tides')) return 'tides';
   if((b.domain||[]).includes('wonderland')) return 'wonderland';
   if((b.domain||[]).includes('wander')) return 'wander';
   return b.type||'dynamic';
