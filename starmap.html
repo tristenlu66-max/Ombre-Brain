@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<title>星图 · Ombre Brain</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #E8E6E1;
+  --ink-dim: rgba(232,230,225,0.55);
+  --panel: rgba(13,16,32,0.78);
+  --panel-border: rgba(255,255,255,0.10);
+  --gold: #eda100;
+  --sky-a: #05070f;
+  --sky-b: #0b1024;
+  --sky-c: #10173a;
+}
+body.day {
+  --ink: #1A1A1A;
+  --ink-dim: rgba(26,26,26,0.55);
+  --panel: rgba(252,250,246,0.85);
+  --panel-border: rgba(0,0,0,0.10);
+  --sky-a: #c8d8ea;
+  --sky-b: #e9ecec;
+  --sky-c: #f6f1e6;
+}
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html, body { height:100%; overflow:hidden; }
+body {
+  font-family:'Inter',-apple-system,sans-serif;
+  color:var(--ink);
+  background: radial-gradient(120% 90% at 50% 0%, var(--sky-c) 0%, var(--sky-b) 42%, var(--sky-a) 100%);
+  transition: background 1.2s ease;
+  user-select:none; -webkit-user-select:none;
+}
+#sky { position:fixed; inset:0; touch-action:none; }
+#sky canvas { display:block; }
+
+/* ---------- top bar ---------- */
+#topbar {
+  position:fixed; top:0; left:0; right:0; z-index:10;
+  display:flex; align-items:center; gap:10px;
+  padding: calc(10px + env(safe-area-inset-top,0px)) 14px 10px;
+  pointer-events:none;
+}
+#topbar > * { pointer-events:auto; }
+#back {
+  font-size:15px; color:var(--ink-dim); text-decoration:none;
+  padding:6px 10px; border-radius:10px; transition:color .3s;
+}
+#back:hover { color:var(--ink); }
+#title {
+  font-family:'Cormorant Garamond',serif; font-size:21px; font-weight:600;
+  letter-spacing:0.06em;
+}
+#title em { font-style:italic; font-weight:400; font-size:15px; color:var(--ink-dim); margin-left:8px; letter-spacing:0.02em; }
+#topbar .spacer { flex:1; }
+.icon-btn {
+  width:36px; height:36px; border-radius:50%;
+  border:1px solid var(--panel-border); background:var(--panel);
+  color:var(--ink); font-size:15px; line-height:1;
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer; backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+  transition:transform .2s, opacity .3s;
+}
+.icon-btn:active { transform:scale(0.92); }
+.icon-btn.off { opacity:0.42; }
+
+/* ---------- bottom controls ---------- */
+#controls {
+  position:fixed; left:0; right:0; z-index:10;
+  bottom: calc(14px + env(safe-area-inset-bottom,0px));
+  display:flex; flex-direction:column; align-items:center; gap:10px;
+  pointer-events:none;
+}
+#controls > * { pointer-events:auto; }
+#density {
+  display:flex; align-items:center; gap:12px;
+  background:var(--panel); border:1px solid var(--panel-border);
+  border-radius:999px; padding:9px 18px;
+  backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+}
+#density .lbl { font-size:11.5px; letter-spacing:0.12em; color:var(--ink-dim); white-space:nowrap; }
+#density .cnt { font-size:11.5px; font-variant-numeric:tabular-nums; color:var(--ink); min-width:64px; text-align:center; }
+#slider {
+  -webkit-appearance:none; appearance:none;
+  width:min(46vw, 240px); height:3px; border-radius:2px;
+  background:linear-gradient(90deg, var(--gold), rgba(150,150,170,0.4));
+  outline:none;
+}
+#slider::-webkit-slider-thumb {
+  -webkit-appearance:none; width:20px; height:20px; border-radius:50%;
+  background:radial-gradient(circle at 38% 34%, #fff, var(--gold) 70%);
+  box-shadow:0 0 10px rgba(237,161,0,0.7); cursor:pointer;
+}
+#slider::-moz-range-thumb {
+  width:20px; height:20px; border:none; border-radius:50%;
+  background:radial-gradient(circle at 38% 34%, #fff, var(--gold) 70%);
+  box-shadow:0 0 10px rgba(237,161,0,0.7); cursor:pointer;
+}
+
+/* ---------- constellation legend ---------- */
+#legend {
+  position:fixed; z-index:11;
+  bottom: calc(74px + env(safe-area-inset-bottom,0px));
+  left:50%; transform:translateX(-50%) translateY(12px);
+  max-width:min(92vw, 560px);
+  background:var(--panel); border:1px solid var(--panel-border);
+  border-radius:16px; padding:12px 14px;
+  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  display:flex; flex-wrap:wrap; gap:8px; justify-content:center;
+  opacity:0; pointer-events:none; transition:opacity .3s, transform .3s;
+}
+#legend.open { opacity:1; pointer-events:auto; transform:translateX(-50%) translateY(0); }
+.dom-chip {
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:12px; padding:5px 11px; border-radius:999px;
+  border:1px solid var(--panel-border); cursor:pointer;
+  color:var(--ink); transition:transform .15s;
+}
+.dom-chip:active { transform:scale(0.94); }
+.dom-chip .dot { width:8px; height:8px; border-radius:50%; box-shadow:0 0 6px currentColor; }
+.dom-chip .n { color:var(--ink-dim); font-variant-numeric:tabular-nums; }
+
+/* ---------- detail sheet ---------- */
+#sheet {
+  position:fixed; z-index:20; left:50%; transform:translateX(-50%) translateY(110%);
+  bottom:0; width:min(100vw, 640px); max-height:62vh;
+  background:var(--panel); border:1px solid var(--panel-border); border-bottom:none;
+  border-radius:22px 22px 0 0;
+  backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+  transition:transform .38s cubic-bezier(.32,.72,.28,1);
+  display:flex; flex-direction:column;
+  padding: 16px 20px calc(18px + env(safe-area-inset-bottom,0px));
+}
+#sheet.open { transform:translateX(-50%) translateY(0); }
+#sheet .grip { width:38px; height:4px; border-radius:2px; background:var(--ink-dim); opacity:.4; margin:0 auto 12px; }
+#sheet h3 {
+  font-family:'Cormorant Garamond',serif; font-size:22px; font-weight:600;
+  line-height:1.25; padding-right:34px;
+}
+#sheet .meta { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0 4px; align-items:center; }
+#sheet .chip {
+  font-size:11px; padding:3px 9px; border-radius:999px;
+  border:1px solid currentColor; opacity:.9;
+}
+#sheet .meta .fact { font-size:11.5px; color:var(--ink-dim); font-variant-numeric:tabular-nums; }
+#sheet .body {
+  margin-top:10px; overflow-y:auto; -webkit-overflow-scrolling:touch;
+  font-size:13.5px; line-height:1.75; color:var(--ink);
+  white-space:pre-wrap; word-break:break-word;
+}
+#sheet-close {
+  position:absolute; top:14px; right:14px;
+  width:30px; height:30px; border-radius:50%;
+  border:1px solid var(--panel-border); background:transparent;
+  color:var(--ink-dim); font-size:14px; cursor:pointer;
+}
+
+/* ---------- loading ---------- */
+#loading {
+  position:fixed; inset:0; z-index:30;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
+  background: radial-gradient(120% 90% at 50% 0%, var(--sky-c) 0%, var(--sky-b) 42%, var(--sky-a) 100%);
+  transition:opacity .9s ease; 
+}
+#loading.gone { opacity:0; pointer-events:none; }
+#loading .orb {
+  width:14px; height:14px; border-radius:50%;
+  background:radial-gradient(circle at 38% 34%, #fff, var(--gold) 72%);
+  box-shadow:0 0 24px 6px rgba(237,161,0,0.55);
+  animation:breathe 2.2s ease-in-out infinite;
+}
+#loading p { font-family:'Cormorant Garamond',serif; font-size:16px; letter-spacing:0.2em; color:var(--ink-dim); }
+@keyframes breathe { 0%,100%{transform:scale(1);opacity:.75} 50%{transform:scale(1.5);opacity:1} }
+
+#toast {
+  position:fixed; top:calc(64px + env(safe-area-inset-top,0px)); left:50%;
+  transform:translateX(-50%); z-index:25;
+  background:var(--panel); border:1px solid var(--panel-border);
+  border-radius:999px; padding:7px 16px; font-size:12.5px;
+  opacity:0; transition:opacity .3s; pointer-events:none;
+  backdrop-filter:blur(10px);
+}
+#toast.show { opacity:1; }
+
+@media (prefers-reduced-motion: reduce) {
+  #loading .orb { animation:none; }
+}
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="orb"></div><p>正在点亮记忆</p></div>
+
+<div id="sky"></div>
+
+<div id="topbar">
+  <a id="back" href="/dashboard">◐ 返回</a>
+  <div id="title">星图<em>starmap</em></div>
+  <div class="spacer"></div>
+  <button class="icon-btn" id="btn-legend" title="星座">✦</button>
+  <button class="icon-btn off" id="btn-lines" title="连线">╱</button>
+  <button class="icon-btn" id="btn-shot" title="快照">◉</button>
+  <button class="icon-btn" id="btn-theme" title="日/夜">☾</button>
+</div>
+
+<div id="legend"></div>
+
+<div id="controls">
+  <div id="density">
+    <span class="lbl">主星</span>
+    <input type="range" id="slider" min="0" max="100" value="30">
+    <span class="lbl">全量</span>
+    <span class="cnt" id="star-count">—</span>
+  </div>
+</div>
+
+<div id="sheet">
+  <div class="grip"></div>
+  <button id="sheet-close">✕</button>
+  <h3 id="sheet-title"></h3>
+  <div class="meta" id="sheet-meta"></div>
+  <div class="body" id="sheet-body"></div>
+</div>
+
+<div id="toast"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* =========================================================
+ * 配色：domain → 主色（锚定色 + 哈希退路）
+ * ========================================================= */
+const DOMAIN_COLORS = {
+  '恋爱': '#e87ba4', '亲密': '#e87ba4',
+  'tides': '#d55181', 'forecast': '#d55181', 'after': '#d55181',
+  '编程': '#3987e5', '工程': '#3987e5', '数字': '#3987e5',
+  '共读': '#199e70',
+  '自省': '#9085e9', '心理': '#9085e9',
+  'note': '#d95926', '鸿湍笔记': '#d95926',
+  '未分类': '#8fa0b5',
+};
+const GOLD = new THREE.Color('#eda100');
+function domainColor(name) {
+  if (DOMAIN_COLORS[name]) return new THREE.Color(DOMAIN_COLORS[name]);
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return new THREE.Color().setHSL((h % 360) / 360, 0.52, 0.64);
+}
+const WARM = new THREE.Color('#ffb38a'), COOL = new THREE.Color('#8fb7ff');
+function starColor(s) {
+  const c = domainColor(s.domain).clone();
+  if (s.valence > 0.65) c.lerp(WARM, (s.valence - 0.65) * 0.7);
+  else if (s.valence < 0.35) c.lerp(COOL, (0.35 - s.valence) * 0.7);
+  if (s.pinned) c.lerp(GOLD, 0.55);
+  return c;
+}
+
+/* =========================================================
+ * 画布贴图：星辰的骨相
+ * ========================================================= */
+function canvasTexture(draw, size = 128) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  draw(cv.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+function radial(ctx, size, stops) {
+  const g = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+  for (const [o, c] of stops) g.addColorStop(o, c);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, size, size);
+}
+/* 柔光圆 */
+const texGlow = canvasTexture((ctx, s) => radial(ctx, s, [
+  [0, 'rgba(255,255,255,1)'], [0.28, 'rgba(255,255,255,0.55)'],
+  [0.62, 'rgba(255,255,255,0.12)'], [1, 'rgba(255,255,255,0)'],
+]));
+/* 衍射芒线星（points 道芒） */
+function spikes(points) {
+  return canvasTexture((ctx, s) => {
+    const c = s/2;
+    radial(ctx, s, [
+      [0, 'rgba(255,255,255,1)'], [0.16, 'rgba(255,255,255,0.75)'],
+      [0.4, 'rgba(255,255,255,0.12)'], [1, 'rgba(255,255,255,0)'],
+    ]);
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < points; i++) {
+      const a = (i / points) * Math.PI * 2 + (points === 6 ? Math.PI/6 : 0);
+      const len = (i % 2 === 0 || points === 4) ? c * 0.96 : c * 0.55;
+      const g = ctx.createLinearGradient(c, c, c + Math.cos(a)*len, c + Math.sin(a)*len);
+      g.addColorStop(0, 'rgba(255,255,255,0.9)');
+      g.addColorStop(0.35, 'rgba(255,255,255,0.35)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.strokeStyle = g; ctx.lineCap = 'round';
+      ctx.lineWidth = s * 0.024;
+      ctx.beginPath(); ctx.moveTo(c, c);
+      ctx.lineTo(c + Math.cos(a)*len, c + Math.sin(a)*len); ctx.stroke();
+    }
+  });
+}
+const texStar4 = spikes(4);
+const texStar6 = spikes(6);
+/* 恒星光晕环 */
+const texHalo = canvasTexture((ctx, s) => radial(ctx, s, [
+  [0, 'rgba(255,255,255,0)'], [0.30, 'rgba(255,255,255,0)'],
+  [0.46, 'rgba(255,255,255,0.34)'], [0.60, 'rgba(255,255,255,0.10)'],
+  [1, 'rgba(255,255,255,0)'],
+]));
+
+/* =========================================================
+ * 场景
+ * ========================================================= */
+const container = document.getElementById('sky');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 2000);
+camera.position.set(0, 42, 235);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 55;
+controls.maxDistance = 520;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.22;
+let idleTimer = null;
+controls.addEventListener('start', () => {
+  controls.autoRotate = false;
+  if (idleTimer) clearTimeout(idleTimer);
+});
+controls.addEventListener('end', () => {
+  idleTimer = setTimeout(() => { controls.autoRotate = true; }, 6000);
+});
+
+/* ---------- 远景星尘（仅夜） ---------- */
+function makeDust(count, rMin, rMax) {
+  const pos = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const v = new THREE.Vector3().randomDirection()
+      .multiplyScalar(rMin + Math.random() * (rMax - rMin));
+    pos.set([v.x, v.y, v.z], i * 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const m = new THREE.PointsMaterial({
+    size: 1.4, map: texGlow, transparent: true, opacity: 0.5,
+    color: 0xbcd0ee, blending: THREE.AdditiveBlending,
+    depthWrite: false, sizeAttenuation: true,
+  });
+  return new THREE.Points(g, m);
+}
+const dust = makeDust(1600, 330, 560);
+scene.add(dust);
+
+/* ---------- 星辰着色器 ---------- */
+const uniforms = {
+  uTime: { value: 0 },
+  uThreshold: { value: 0 },
+  uDay: { value: 0 },       // 0 夜 / 1 日
+  uScale: { value: 1 },
+};
+function starMaterial(map, extra = {}) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      ...uniforms,
+      uMap: { value: map },
+      uPulse: { value: extra.pulse ? 1.0 : 0.0 },
+    },
+    vertexShader: `
+      attribute vec3 aColor;
+      attribute float aSize;
+      attribute float aPhase;
+      attribute float aScore;
+      attribute float aDim;
+      attribute float aBirth;
+      uniform float uTime, uThreshold, uScale, uPulse;
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        vColor = aColor;
+        float alive = step(uThreshold, aScore);
+        float birth = clamp((uTime - aBirth) / 2.2, 0.0, 1.0);
+        float tw = uPulse > 0.5
+          ? 0.86 + 0.14 * sin(uTime * 0.9 + aPhase)
+          : 0.76 + 0.24 * sin(uTime * (1.4 + fract(aPhase) * 1.2) + aPhase);
+        vAlpha = alive * birth * aDim * tw;
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        float ps = aSize * uScale * tw * birth * alive * (150.0 / max(1.0, -mv.z));
+        gl_PointSize = ps;
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: `
+      uniform sampler2D uMap;
+      uniform float uDay;
+      varying vec3 vColor;
+      varying float vAlpha;
+      void main() {
+        if (vAlpha <= 0.001) discard;
+        float lum = texture2D(uMap, gl_PointCoord).r;
+        if (lum <= 0.01) discard;
+        // 夜：星色向白炽核心过渡，加法混合；日：星色如墨玉宝石，普通混合
+        vec3 night = mix(vColor, vec3(1.0), pow(lum, 2.4) * 0.9) * lum;
+        vec3 day = vColor * mix(0.55, 0.85, lum);
+        vec3 rgb = mix(night, day, uDay);
+        float a = mix(lum * vAlpha, min(1.0, pow(lum, 1.1) * vAlpha * 1.3), uDay);
+        gl_FragColor = vec4(rgb, a);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    ...extra.mat,
+  });
+}
+
+/* ---------- 世界状态 ---------- */
+let DATA = null;
+let starList = [];             // 与各组顶点对应的引用
+const groups = { small: null, mid: null, big: null, halo: null };
+const nebulae = new THREE.Group();
+scene.add(nebulae);
+let linesMesh = null;
+let showLines = false;
+let threshold = 0;
+let clockBase = performance.now() / 1000;
+
+function nowT() { return performance.now() / 1000 - clockBase; }
+
+function disposePoints(p) {
+  if (!p) return;
+  scene.remove(p);
+  p.geometry.dispose();
+  p.material.dispose();
+}
+
+/* ---------- 建天 ---------- */
+function buildSky(data, isRefresh = false) {
+  const prevIds = new Set(starList.map(s => s.id));
+  DATA = data;
+  starList = data.stars.slice();
+
+  const buckets = { small: [], mid: [], big: [] };
+  for (const s of starList) {
+    let base = 5.2 + s.importance * 1.5;
+    if (s.pinned) base *= 1.75;
+    if (s.resolved || s.digested) base *= 0.68;
+    s._size = base;
+    s._dim = (s.resolved || s.digested) ? 0.42 : 1.0;
+    s._birth = (isRefresh && !prevIds.has(s.id)) ? nowT() : -10;
+    if (s.pinned) buckets.big.push(s);
+    else if (s.importance >= 7) buckets.mid.push(s);
+    else buckets.small.push(s);
+  }
+
+  function fill(list, map, extra) {
+    const n = list.length;
+    const g = new THREE.BufferGeometry();
+    const pos = new Float32Array(n*3), col = new Float32Array(n*3);
+    const size = new Float32Array(n), phase = new Float32Array(n);
+    const score = new Float32Array(n), dim = new Float32Array(n), birth = new Float32Array(n);
+    list.forEach((s, i) => {
+      pos.set([s.x, s.y, s.z], i*3);
+      const c = starColor(s); col.set([c.r, c.g, c.b], i*3);
+      size[i] = s._size; phase[i] = (i * 2.399) % 6.283;
+      score[i] = s.score; dim[i] = s._dim; birth[i] = s._birth;
+      s._pick = { list, i };
+    });
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+    g.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    g.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
+    g.setAttribute('aScore', new THREE.BufferAttribute(score, 1));
+    g.setAttribute('aDim', new THREE.BufferAttribute(dim, 1));
+    g.setAttribute('aBirth', new THREE.BufferAttribute(birth, 1));
+    const p = new THREE.Points(g, starMaterial(map, extra));
+    p.userData.stars = list;
+    scene.add(p);
+    return p;
+  }
+
+  disposePoints(groups.small); disposePoints(groups.mid);
+  disposePoints(groups.big); disposePoints(groups.halo);
+  groups.small = fill(buckets.small, texGlow, {});
+  groups.mid   = fill(buckets.mid, texStar4, {});
+  groups.big   = fill(buckets.big, texStar6, { pulse: true });
+
+  /* pinned 光晕层：同位置更大的金环，缓慢脉动 */
+  const haloStars = buckets.big.map(s => ({ ...s, _size: s._size * 2.5, _dim: 0.9 }));
+  groups.halo = fill(haloStars, texHalo, { pulse: true });
+  groups.halo.userData.noPick = true;
+  {
+    const col = groups.halo.geometry.getAttribute('aColor');
+    for (let i = 0; i < col.count; i++) col.set([GOLD.r, GOLD.g, GOLD.b], i*3);
+    col.needsUpdate = true;
+  }
+
+  buildNebulae(data.domains);
+  buildLines();
+  applyTheme(currentTheme, true);
+  updateThreshold();
+}
+
+/* ---------- 星云 ---------- */
+function buildNebulae(domains) {
+  while (nebulae.children.length) {
+    const c = nebulae.children.pop();
+    c.material.dispose();
+  }
+  for (const d of domains) {
+    if (d.count < 3) continue;
+    const isNote = (d.name === 'note' || d.name === '鸿湍笔记');
+    const mat = new THREE.SpriteMaterial({
+      map: texGlow, transparent: true, depthWrite: false,
+      color: domainColor(d.name),
+      blending: THREE.AdditiveBlending,
+      opacity: isNote ? 0.22 : 0.13,
+    });
+    const sp = new THREE.Sprite(mat);
+    sp.position.set(...d.anchor);
+    const r = (14 + 4.5 * Math.sqrt(d.count)) * (isNote ? 2.6 : 3.1);
+    sp.scale.set(r, r, 1);
+    sp.userData.isNote = isNote;
+    nebulae.add(sp);
+  }
+}
+
+/* ---------- 虚线 ---------- */
+function buildLines() {
+  if (linesMesh) {
+    scene.remove(linesMesh);
+    linesMesh.geometry.dispose();
+    linesMesh.material.dispose();
+    linesMesh = null;
+  }
+  if (!DATA || !DATA.edges.length) return;
+  const byId = Object.fromEntries(starList.map(s => [s.id, s]));
+  const pts = [];
+  for (const e of DATA.edges) {
+    const a = byId[e.s], b = byId[e.t];
+    if (!a || !b) continue;
+    if (a.score < threshold || b.score < threshold) continue;
+    pts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3));
+  const m = new THREE.LineDashedMaterial({
+    color: currentTheme === 'day' ? 0x4a4a55 : 0xaebbe0,
+    transparent: true, opacity: currentTheme === 'day' ? 0.22 : 0.17,
+    dashSize: 1.3, gapSize: 1.9, depthWrite: false,
+  });
+  linesMesh = new THREE.LineSegments(g, m);
+  linesMesh.computeLineDistances();
+  linesMesh.visible = showLines;
+  scene.add(linesMesh);
+}
+
+/* =========================================================
+ * 主题：日 / 夜
+ * ========================================================= */
+let currentTheme = localStorage.getItem('starmap-theme') || 'night';
+function applyTheme(theme, silent) {
+  currentTheme = theme;
+  localStorage.setItem('starmap-theme', theme);
+  document.body.classList.toggle('day', theme === 'day');
+  document.getElementById('btn-theme').textContent = theme === 'day' ? '☀' : '☾';
+  const day = theme === 'day' ? 1 : 0;
+  uniforms.uDay.value = day;
+  const blend = day ? THREE.NormalBlending : THREE.AdditiveBlending;
+  for (const k of ['small','mid','big','halo']) {
+    if (groups[k]) groups[k].material.blending = blend;
+  }
+  dust.visible = !day;
+  for (const sp of nebulae.children) {
+    sp.material.blending = day ? THREE.NormalBlending : THREE.AdditiveBlending;
+    sp.material.opacity = day
+      ? (sp.userData.isNote ? 0.16 : 0.09)
+      : (sp.userData.isNote ? 0.22 : 0.13);
+  }
+  if (linesMesh) {
+    linesMesh.material.color.set(day ? 0x4a4a55 : 0xaebbe0);
+    linesMesh.material.opacity = day ? 0.22 : 0.17;
+  }
+  if (!silent) toast(theme === 'day' ? '白昼星图' : '夜航星图');
+}
+
+/* =========================================================
+ * 滑杆：主星 ←→ 全量（按 score 分位数）
+ * ========================================================= */
+const slider = document.getElementById('slider');
+const countEl = document.getElementById('star-count');
+function updateThreshold() {
+  if (!starList.length) return;
+  const frac = Number(slider.value) / 100;          // 0=主星 1=全量
+  const scores = starList.map(s => s.score).sort((a,b) => a-b);
+  const keep = Math.max(1, Math.round(starList.length * (0.12 + 0.88 * frac)));
+  threshold = scores[Math.max(0, scores.length - keep)];
+  if (frac >= 0.999) threshold = -1;
+  uniforms.uThreshold.value = threshold;
+  const visible = starList.filter(s => s.score >= threshold).length;
+  countEl.textContent = `${visible} / ${starList.length}`;
+  clearTimeout(updateThreshold._t);
+  updateThreshold._t = setTimeout(buildLines, 120);
+}
+slider.addEventListener('input', updateThreshold);
+
+/* =========================================================
+ * UI：按钮
+ * ========================================================= */
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 1800);
+}
+document.getElementById('btn-theme').onclick = () =>
+  applyTheme(currentTheme === 'day' ? 'night' : 'day');
+
+document.getElementById('btn-lines').onclick = (e) => {
+  showLines = !showLines;
+  e.currentTarget.classList.toggle('off', !showLines);
+  if (linesMesh) linesMesh.visible = showLines;
+  toast(showLines ? '连线已亮' : '连线已隐');
+};
+
+document.getElementById('btn-shot').onclick = () => {
+  renderer.render(scene, camera);
+  renderer.domElement.toBlob((blob) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    const d = new Date().toISOString().slice(0,10);
+    a.download = `ombre-starmap-${d}.png`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast('快照已存');
+  }, 'image/png');
+};
+
+/* ---------- 星座图例 + 飞行 ---------- */
+const legend = document.getElementById('legend');
+document.getElementById('btn-legend').onclick = () => legend.classList.toggle('open');
+function buildLegend(domains) {
+  legend.innerHTML = '';
+  for (const d of domains) {
+    const chip = document.createElement('button');
+    chip.className = 'dom-chip';
+    const c = domainColor(d.name).getStyle();
+    chip.innerHTML = `<span class="dot" style="background:${c};color:${c}"></span>
+      ${d.name === 'note' ? '鸿湍笔记' : d.name} <span class="n">${d.count}</span>`;
+    chip.onclick = () => { flyTo(d.anchor); legend.classList.remove('open'); };
+    legend.appendChild(chip);
+  }
+}
+let flight = null;
+function flyTo(anchor) {
+  const target = new THREE.Vector3(...anchor);
+  const dir = target.lengthSq() < 1
+    ? new THREE.Vector3(0, 0.25, 1).normalize()
+    : target.clone().normalize();
+  const dist = Math.max(120, target.length() + 90);
+  flight = {
+    from: camera.position.clone(),
+    to: dir.multiplyScalar(dist),
+    t0: nowT(), dur: 1.6,
+  };
+  controls.autoRotate = false;
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => { controls.autoRotate = true; }, 8000);
+}
+
+/* =========================================================
+ * 点选：raycast → 详情
+ * ========================================================= */
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!downAt) return;
+  const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y);
+  const dt = performance.now() - downAt.t;
+  downAt = null;
+  if (moved > 8 || dt > 450) return;          // 拖动不算点
+  pointer.x = (e.clientX / innerWidth) * 2 - 1;
+  pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  raycaster.params.Points.threshold = 2.2 * (camera.position.length() / 235);
+  const targets = [groups.big, groups.mid, groups.small].filter(Boolean);
+  const hits = raycaster.intersectObjects(targets, false);
+  for (const h of hits) {
+    const s = h.object.userData.stars[h.index];
+    if (s && s.score >= threshold) { openSheet(s); return; }
+  }
+  closeSheet();
+});
+
+const sheet = document.getElementById('sheet');
+document.getElementById('sheet-close').onclick = closeSheet;
+function closeSheet() { sheet.classList.remove('open'); }
+async function openSheet(s) {
+  const c = domainColor(s.domain).getStyle();
+  document.getElementById('sheet-title').textContent = s.name;
+  const created = (s.created || '').slice(0, 10);
+  document.getElementById('sheet-meta').innerHTML =
+    (s.domains || [s.domain]).map(d =>
+      `<span class="chip" style="color:${domainColor(d).getStyle()}">${d}</span>`).join('') +
+    (s.pinned ? `<span class="chip" style="color:${GOLD.getStyle()}">✦ 恒星</span>` : '') +
+    (s.resolved ? `<span class="chip" style="opacity:.55">沉底</span>` : '') +
+    `<span class="fact">重 ${s.importance}</span>` +
+    (created ? `<span class="fact">${created}</span>` : '');
+  const body = document.getElementById('sheet-body');
+  body.textContent = '…';
+  sheet.classList.add('open');
+  try {
+    const r = await fetch(`/api/bucket/${s.id}`);
+    if (r.ok) {
+      const d = await r.json();
+      body.textContent = d.content || '（空）';
+    } else body.textContent = '（读取失败）';
+  } catch { body.textContent = '（读取失败）'; }
+}
+
+/* =========================================================
+ * 数据
+ * ========================================================= */
+async function loadData(isRefresh = false) {
+  const r = await fetch('/api/starmap');
+  if (r.status === 401 || r.status === 403) { location.href = '/dashboard'; return; }
+  if (!r.ok) throw new Error('starmap api ' + r.status);
+  const data = await r.json();
+  const changed = !DATA
+    || DATA.stars.length !== data.stars.length
+    || JSON.stringify(DATA.stars.map(s => [s.id, s.score, s.pinned])) !==
+       JSON.stringify(data.stars.map(s => [s.id, s.score, s.pinned]));
+  if (changed) {
+    buildSky(data, isRefresh);
+    buildLegend(data.domains);
+  }
+}
+
+/* =========================================================
+ * 主循环
+ * ========================================================= */
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (reduceMotion) controls.autoRotate = false;
+
+function tick() {
+  requestAnimationFrame(tick);
+  const t = nowT();
+  uniforms.uTime.value = reduceMotion ? 0 : t;
+  if (flight) {
+    const k = Math.min(1, (t - flight.t0) / flight.dur);
+    const e = 1 - Math.pow(1 - k, 3);
+    camera.position.lerpVectors(flight.from, flight.to, e);
+    if (k >= 1) flight = null;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ---------- 启动 ---------- */
+(async () => {
+  try {
+    await loadData(false);
+    applyTheme(currentTheme, true);
+    tick();
+    setInterval(() => loadData(true).catch(()=>{}), 60000);
+  } catch (e) {
+    document.querySelector('#loading p').textContent = '星空未能点亮 · ' + e.message;
+    return;
+  }
+  setTimeout(() => document.getElementById('loading').classList.add('gone'), 500);
+})();
+</script>
+</body>
+</html>

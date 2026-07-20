@@ -599,6 +599,10 @@ body {
     <span class="nav-icon">🔐</span>
     <span data-i18n="nav_vault">Vault</span>
   </div>
+  <div class="nav-item" data-page="starmap">
+    <span class="nav-icon">✦</span>
+    <span data-i18n="nav_starmap">星图</span>
+  </div>
   <div class="nav-item" data-page="more">
     <span class="nav-icon">⚙</span>
     <span data-i18n="nav_more">More</span>
@@ -974,6 +978,7 @@ document.querySelectorAll('.nav-item').forEach(item=>{
     document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
     item.classList.add('active');
     const pg=item.dataset.page;
+    if(pg==='starmap'){ location.href='/starmap'; return; }
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
     document.getElementById('page-'+pg).classList.add('active');
     if(pg==='calendar') loadCalendar();

@@ -83,6 +83,13 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.custom_route("/dashboard", methods=["GET"])(dashboard)
     mcp.custom_route("/desire", methods=["GET"])(desire_panel)
 
+    # Starmap 星图（独立页面，同源同session）
+    import starmap as _starmap
+    _starmap.init(bucket_mgr=bucket_mgr, decay_engine=decay_engine,
+                  embedding_engine=embedding_engine, require_auth=_require_auth)
+    mcp.custom_route("/starmap", methods=["GET"])(_starmap.starmap_page)
+    mcp.custom_route("/api/starmap", methods=["GET"])(_starmap.api_starmap)
+
     # Dashboard API
     mcp.custom_route("/api/buckets", methods=["GET"])(api_buckets)
     mcp.custom_route("/api/bucket/{bucket_id}", methods=["GET"])(api_bucket_detail)
