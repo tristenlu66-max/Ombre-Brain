@@ -37,6 +37,7 @@ from utils import load_config, setup_logging, strip_wikilinks
 
 from desire_engine import DesireEngine
 from raw_events import RawEventStore   # 第2刀 2a
+from private_rooms import init_private_db
 
 # =============================================================
 # 1. Config & Logging
@@ -80,6 +81,7 @@ decay_engine = DecayEngine(config, bucket_mgr)
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)
 desire_engine = DesireEngine(config)
 raw_store = RawEventStore(config)   # 第2刀 2b
+init_private_db(raw_store.db_path)
 
 # =============================================================
 # 3. Create MCP Server
@@ -119,6 +121,7 @@ register_routes(
     import_engine=import_engine,
     fire_webhook=_fire_webhook,
     raw_store=raw_store,   # 第2刀 2c
+    private_db_path=raw_store.db_path,
 )
 
 # =============================================================

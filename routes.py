@@ -23,6 +23,7 @@ import time
 import logging
 import asyncio
 import json as _json_lib
+from private_rooms import make_endpoint, room_open_sync, room_put_sync, room_list_sync, room_del_sync
 
 from utils import strip_wikilinks, count_tokens_approx, sanitize_name
 import frontmatter
@@ -40,6 +41,7 @@ _desire_engine = None
 _import_engine = None
 _fire_webhook = None
 _raw_store = None   # 第4刀 4a
+_private_db_path = None
 
 # --- Session store (lost on restart, 7-day expiry) ---
 _sessions: dict[str, float] = {}
@@ -47,10 +49,10 @@ _sessions: dict[str, float] = {}
 
 def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
                     embedding_engine, desire_engine, import_engine, fire_webhook,
-                    raw_store=None):   # 第4刀 4a 签名
+                    raw_store=None, private_db_path=None):   # 第4刀 4a 签名
     """Called once from server.py to inject shared instances and register all routes."""
     global _mcp, _config, _bucket_mgr, _dehydrator, _decay_engine
-    global _embedding_engine, _desire_engine, _import_engine, _fire_webhook, _raw_store   # 4a
+    global _embedding_engine, _desire_engine, _import_engine, _fire_webhook, _raw_store, _private_db_path   # 4a
     _mcp = mcp
     _config = config
     _bucket_mgr = bucket_mgr
@@ -61,6 +63,7 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     _import_engine = import_engine
     _fire_webhook = fire_webhook
     _raw_store = raw_store
+    _private_db_path = private_db_path
 
     # --- Register all routes ---
     mcp.custom_route("/", methods=["GET"])(root_redirect)
@@ -130,6 +133,12 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
 
     # 第4刀 4b
     mcp.custom_route("/api/ingest-raw", methods=["POST"])(ingest_raw)
+
+    # Private room v0.1: isolated owner-gated endpoints.
+    mcp.custom_route("/api/room_open", methods=["POST"])(make_endpoint(room_open_sync, _private_db_path))
+    mcp.custom_route("/api/room_put", methods=["POST"])(make_endpoint(room_put_sync, _private_db_path))
+    mcp.custom_route("/api/room_list", methods=["POST"])(make_endpoint(room_list_sync, _private_db_path))
+    mcp.custom_route("/api/room_del", methods=["POST"])(make_endpoint(room_del_sync, _private_db_path))
 
 
 # =============================================================
@@ -1320,7 +1329,9 @@ async def api_export_all(request):
                 t = b.get("metadata", {}).get("type", "dynamic")
                 manifest["counts_by_type"][t] = manifest["counts_by_type"].get(t, 0) + 1
             # --- Include raw_events.sqlite if it exists ---
-            if _raw_store and hasattr(_raw_store, 'db_path'):
+            # Private-room tables share this SQLite file; never export the raw DB
+            # wholesale, or private bodies would leave the private boundary.
+            if False and _raw_store and hasattr(_raw_store, 'db_path'):
                 raw_db_path = _raw_store.db_path
                 if os.path.isfile(raw_db_path):
                     try:
@@ -1505,7 +1516,8 @@ async function upload() {
 
         # --- Restore raw_events.sqlite if present in zip ---
         raw_restored = False
-        if "raw_events.sqlite" in zf.namelist() and _raw_store and hasattr(_raw_store, 'db_path'):
+        # Never restore a whole raw DB: it may contain private_room/private_item.
+        if False and "raw_events.sqlite" in zf.namelist() and _raw_store and hasattr(_raw_store, 'db_path'):
             try:
                 raw_db_bytes = zf.read("raw_events.sqlite")
                 raw_db_path = _raw_store.db_path

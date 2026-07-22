@@ -17,6 +17,7 @@ import logging
 from datetime import datetime
 
 from utils import strip_wikilinks, count_tokens_approx
+from private_rooms import room_open_sync, room_put_sync, room_list_sync, room_del_sync
 
 logger = logging.getLogger("ombre_brain")
 
@@ -34,7 +35,7 @@ _raw_store = None   # 第3刀 3a
 
 def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
                    embedding_engine, desire_engine, fire_webhook,
-                   raw_store=None):   # 第3刀 3a 签名
+                   raw_store=None, private_db_path=None):   # 第3刀 3a 签名
     """Called once from server.py to inject shared instances."""
     global _mcp, _config, _bucket_mgr, _dehydrator, _decay_engine
     global _embedding_engine, _desire_engine, _fire_webhook, _raw_store   # 3a
@@ -60,6 +61,40 @@ def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.tool()(raw_search)
     # I tool — self-cognition / 自我认知
     mcp.tool()(I)
+    mcp.tool()(room_open)
+    mcp.tool()(room_put)
+    mcp.tool()(room_list)
+    mcp.tool()(room_del)
+
+
+def _private_error(exc: Exception) -> str:
+    if isinstance(exc, PermissionError): return '{"error":"forbidden"}'
+    if isinstance(exc, KeyError): return '{"error":"not_found"}'
+    return '{"error":"' + str(exc).replace('"', "'") + '"}'
+
+
+async def room_open(owner: str, room_id: str = "", display_name: str = "闺房") -> str:
+    """Open or create the private room. Only owner='evan' is accepted."""
+    try: return __import__("json").dumps(room_open_sync(_raw_store.db_path, {"owner": owner, "room_id": room_id, "display_name": display_name}), ensure_ascii=False)
+    except Exception as exc: return _private_error(exc)
+
+
+async def room_put(owner: str, room_id: str, body: str, kind: str = "note", remind_at: str = "") -> str:
+    """Write one private item; v0.1 stores body as plain text."""
+    try: return __import__("json").dumps(room_put_sync(_raw_store.db_path, {"owner": owner, "room_id": room_id, "body": body, "kind": kind, "remind_at": remind_at or None}), ensure_ascii=False)
+    except Exception as exc: return _private_error(exc)
+
+
+async def room_list(owner: str, room_id: str, state: str = "active") -> str:
+    """List private items by lifecycle state. Only owner='evan' is accepted."""
+    try: return __import__("json").dumps(room_list_sync(_raw_store.db_path, {"owner": owner, "room_id": room_id, "state": state}), ensure_ascii=False)
+    except Exception as exc: return _private_error(exc)
+
+
+async def room_del(owner: str, item_id: str, action: str = "trash") -> str:
+    """Move an item to trash, restore it, or permanently mark it destroyed."""
+    try: return __import__("json").dumps(room_del_sync(_raw_store.db_path, {"owner": owner, "item_id": item_id, "action": action}), ensure_ascii=False)
+    except Exception as exc: return _private_error(exc)
 
 
 # =============================================================
