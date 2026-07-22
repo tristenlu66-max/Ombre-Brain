@@ -1,0 +1,30 @@
+name: Deploy to House VPS
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: house-vps-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: deploy
+          port: 2222
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -e
+            cd /srv/te/ihaveabrain
+            test -z "$(git status --porcelain --untracked-files=no)"
+            git pull --ff-only origin main
+            /srv/te/ihaveabrain/venv/bin/pip install -r requirements.txt
+            sudo systemctl restart ihaveabrain
+            curl --fail --silent --show-error http://127.0.0.1:8000/health
