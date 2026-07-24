@@ -776,6 +776,7 @@ async def _breath_core(
 
     results = []
     hit_ids = []  # 刀二
+    linked_seen = set()  # v2.0: track linked buckets already shown
     token_used = 0
     for bucket in matches:
         if token_used >= max_tokens:
@@ -799,6 +800,34 @@ async def _breath_core(
             results.append(summary)
             hit_ids.append(bucket["id"])
             token_used += summary_tokens
+
+            # --- v2.0: pull linked buckets (1 layer deep, budget-aware) ---
+            bucket_links = bucket["metadata"].get("links", [])
+            for link in bucket_links:
+                link_to = link.get("to", "")
+                link_edge = link.get("edge", "")
+                if not link_to or link_to in linked_seen or link_to in hit_ids:
+                    continue
+                if token_used >= max_tokens:
+                    break
+                try:
+                    linked_bucket = await _bucket_mgr.get(link_to)
+                    if not linked_bucket:
+                        continue
+                    lb_meta = {k: v for k, v in linked_bucket["metadata"].items() if k != "tags"}
+                    lb_summary = await _dehydrator.dehydrate(
+                        strip_wikilinks(linked_bucket["content"]), lb_meta
+                    )
+                    lb_tokens = count_tokens_approx(lb_summary)
+                    if token_used + lb_tokens > max_tokens:
+                        break
+                    edge_label = f"↳{link_edge}"
+                    results.append(f"  [{edge_label}] [bucket_id:{link_to}] {lb_summary}")
+                    hit_ids.append(link_to)
+                    linked_seen.add(link_to)
+                    token_used += lb_tokens
+                except Exception:
+                    continue
         except Exception as e:
             logger.warning(f"Failed to dehydrate search result / 检索结果脱水失败: {e}")
             continue
@@ -885,19 +914,23 @@ async def hold(
         except Exception:
             pass
         if source_bucket and source_bucket.strip():
+            src_id = source_bucket.strip()
             try:
                 update_kwargs = {"digested": True}
                 if 0 <= valence <= 1:
                     update_kwargs["model_valence"] = feel_valence
                 # Auto-wonder: if source is a wander bucket, promote to wonderland
                 # 回响自动升级：source 是 wander 桶时，自动送入 wonderland
-                src = await _bucket_mgr.get(source_bucket.strip())
+                src = await _bucket_mgr.get(src_id)
                 if src:
                     src_domains = src.get("metadata", {}).get("domain", [])
                     if "wander" in src_domains and "wonderland" not in src_domains:
                         update_kwargs["wonder"] = True
-                        logger.info(f"Auto-wonder via hold echo / hold回响自动升级: {source_bucket.strip()}")
-                await _bucket_mgr.update(source_bucket.strip(), **update_kwargs)
+                        logger.info(f"Auto-wonder via hold echo / hold回响自动升级: {src_id}")
+                await _bucket_mgr.update(src_id, **update_kwargs)
+                # v2.0: bidirectional link — feel extends source, source feels→feel
+                await _bucket_mgr.add_link(bucket_id, src_id, edge="extends")
+                await _bucket_mgr.add_link(src_id, bucket_id, edge="feels")
             except Exception as e:
                 logger.warning(f"Failed to mark source as digested / 标记已消化失败: {e}")
         return f"🫧feel→{bucket_id}"

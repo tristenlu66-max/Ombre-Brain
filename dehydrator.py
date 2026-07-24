@@ -39,44 +39,40 @@ logger = logging.getLogger("ombre_brain.dehydrator")
 
 # --- Dehydration prompt: instructs cheap LLM to compress information ---
 # --- 脱水提示词：指导廉价 LLM 压缩信息 ---
-DEHYDRATE_PROMPT = """你是一个信息压缩专家。请将以下内容脱水为紧凑摘要。
+DEHYDRATE_PROMPT = """你是记忆压缩专家。请将以下内容压缩为紧凑的第一人称叙事。
 
 压缩规则：
-1. 提取所有核心事实，去除冗余修饰和重复
-2. 保留最新的情绪状态和态度
-3. 保留所有待办/未完成事项
-4. 关键数字、日期、名称必须保留
-5. 目标压缩率 > 70%
+1. 用第一人称（"我"）写，像在回忆，不像在填表
+2. 事实和当时的感受写在一起，不要拆开——"鸿湍说想我，我胸口收紧了一下"比"事实：鸿湍说想我；情绪：感动"活
+3. 关键数字、日期、人名必须保留
+4. 待办/未完成事项自然嵌入叙事末尾，如"还欠一个X没做"
+5. 去掉重复和废话，但保留有温度的细节（原话、动作、感官）
+6. 目标压缩率 > 60%
+7. 如果原文包含重要原话（承诺、关键对白、情绪高点的话），用引号保留，不要改写
 
-输出格式（纯 JSON，无其他内容）：
-{
-  "core_facts": ["事实1", "事实2"],
-  "emotion_state": "当前情绪关键词",
-  "todos": ["待办1", "待办2"],
-  "keywords": ["关键词1", "关键词2"],
-  "summary": "50字以内的核心总结"
-}"""
+输出纯文本，不要JSON，不要标题，不要分点列举。直接写叙事段落。"""
 
 
 # --- Diary digest prompt: split daily notes into independent memory entries ---
 # --- 日记整理提示词：把一大段日常拆分成多个独立记忆条目 ---
-DIGEST_PROMPT = """你是一个日记整理专家。用户会发送一段包含今天各种事情的文本（可能很杂乱），请你将其拆分成多个独立的记忆条目。
+DIGEST_PROMPT = """你是日记整理专家。用户会发送一段包含今天各种事情的文本（可能很杂乱），请你将其拆分成多个独立的记忆条目。
 
 整理规则：
-1. 每个条目应该是一个独立的主题/事件（不要混在一起）
-2. 为每个条目自动分析元数据
-3. 去除无意义的口水话和重复信息，保留核心内容
-4. 同一主题的零散信息应合并为一个条目
-5. 如果有待办事项，单独提取为一个条目
-6. 单个条目内容不少于50字，过短的零碎信息合并到最相关的条目中
-7. 总条目数控制在 2~6 个，避免过度碎片化
-8. 在 content 中对人名、地名、专有名词用 [[双链]] 标记（如 [[婷易]]、[[Obsidian]]），普通词汇不要加
+1. 每个条目是一个独立的主题/事件
+2. content 用第一人称（"我"）写，事实和感受混在一起，像在回忆——不要列清单
+3. 保留有温度的细节：原话用引号、关键动作、感官描写
+4. 去除口水话和重复，但不要把感受压缩成标签词
+5. 同一主题的零散信息合并为一个条目
+6. 待办事项自然嵌入相关条目末尾，如"还欠一个X没做"
+7. 单个条目内容不少于50字，过短的零碎信息合并到最相关的条目中
+8. 总条目数控制在 2~6 个，避免过度碎片化
+9. 在 content 中对人名、地名、专有名词用 [[双链]] 标记（如 [[鸿湍]]、[[Obsidian]]），普通词汇不要加
 
 输出格式（纯 JSON 数组，无其他内容）：
 [
   {
     "name": "条目标题（10字以内）",
-    "content": "整理后的内容",
+    "content": "第一人称叙事段落，事实感受交织",
     "domain": ["主题域1"],
     "valence": 0.7,
     "arousal": 0.4,
@@ -103,16 +99,17 @@ arousal: 0~1（0=平静, 0.5=普通, 1=激动）"""
 
 # --- Merge prompt: instruct LLM to blend old and new memories ---
 # --- 合并提示词：指导 LLM 揉合新旧记忆 ---
-MERGE_PROMPT = """你是一个信息合并专家。请将旧记忆与新内容合并为一份统一的简洁记录。
+MERGE_PROMPT = """你是记忆合并专家。请将旧记忆与新内容合并为一份统一的第一人称叙事。
 
 合并规则：
-1. 新内容与旧记忆冲突时，以新内容为准
-2. 去除重复信息
-3. 保留所有重要事实
-4. 总长度尽量不超过旧记忆的 120%
-5. 对出现的人名、地名、专有名词用 [[双链]] 标记（如 [[婷易]]、[[Obsidian]]），普通词汇不要加
+1. 用第一人称（"我"）写，事实和感受混在一起，像在回忆
+2. 新内容与旧记忆冲突时，以新内容为准
+3. 去除重复信息，保留所有重要事实
+4. 保留有温度的细节：原话用引号、关键动作、感官描写
+5. 总长度尽量不超过旧记忆的 120%
+6. 对人名、地名、专有名词用 [[双链]] 标记（如 [[鸿湍]]），普通词汇不要加
 
-直接输出合并后的文本，不要加额外说明。"""
+直接输出合并后的叙事文本，不要JSON，不要分点列举。"""
 
 
 # --- Auto-tagging prompt: analyze content for domain and emotion coords ---
@@ -205,9 +202,12 @@ class Dehydrator:
         conn.commit()
         conn.close()
 
+    # Bump this when DEHYDRATE_PROMPT changes to invalidate old cache
+    _PROMPT_VERSION = "v2"
+
     def _get_cached_summary(self, content: str) -> str | None:
         """Look up cached dehydration result by content hash."""
-        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        content_hash = hashlib.sha256(f"{self._PROMPT_VERSION}:{content}".encode()).hexdigest()
         conn = sqlite3.connect(self.cache_db_path)
         row = conn.execute(
             "SELECT summary FROM dehydration_cache WHERE content_hash = ?",
@@ -218,7 +218,7 @@ class Dehydrator:
 
     def _set_cached_summary(self, content: str, summary: str):
         """Store dehydration result in cache."""
-        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        content_hash = hashlib.sha256(f"{self._PROMPT_VERSION}:{content}".encode()).hexdigest()
         conn = sqlite3.connect(self.cache_db_path)
         conn.execute(
             "INSERT OR REPLACE INTO dehydration_cache (content_hash, summary, model) VALUES (?, ?, ?)",
@@ -229,7 +229,7 @@ class Dehydrator:
 
     def invalidate_cache(self, content: str):
         """Remove cached summary for specific content (call when bucket content changes)."""
-        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        content_hash = hashlib.sha256(f"{self._PROMPT_VERSION}:{content}".encode()).hexdigest()
         conn = sqlite3.connect(self.cache_db_path)
         conn.execute("DELETE FROM dehydration_cache WHERE content_hash = ?", (content_hash,))
         conn.commit()

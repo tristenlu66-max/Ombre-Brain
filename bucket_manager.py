@@ -112,6 +112,7 @@ class BucketManager:
         name: str = None,
         pinned: bool = False,
         protected: bool = False,
+        links: list[dict] = None,
     ) -> str:
         """
         Create a new memory bucket, return bucket ID.
@@ -141,6 +142,7 @@ class BucketManager:
             importance = 10
 
         # --- Build YAML frontmatter metadata / 构建元数据 ---
+        # links: 桶间关联 [{"to": bucket_id, "edge": "extends|resonates_with|supersedes|contradicts|references"}]
         metadata = {
             "id": bucket_id,
             "name": bucket_name,
@@ -153,6 +155,7 @@ class BucketManager:
             "created": now_iso(),
             "last_active": now_iso(),
             "activation_count": 0,
+            "links": links or [],
         }
         if pinned:
             metadata["pinned"] = True
@@ -309,6 +312,8 @@ class BucketManager:
             post["model_valence"] = max(0.0, min(1.0, float(kwargs["model_valence"])))
         if "bot_visible" in kwargs:
             post["bot_visible"] = bool(kwargs["bot_visible"])
+        if "links" in kwargs:
+            post["links"] = kwargs["links"]
         if "wonder" in kwargs:
             post["wonder"] = bool(kwargs["wonder"])
             # Auto-manage domain: add/remove "wonderland"
@@ -370,6 +375,36 @@ class BucketManager:
 
         logger.info(f"Updated bucket / 更新记忆桶: {bucket_id}")
         return True
+
+    # ---------------------------------------------------------
+    # Add a link between buckets (append to existing links array)
+    # 给桶追加一条关联边
+    # edge types: extends, resonates_with, supersedes, contradicts, references, feels
+    # ---------------------------------------------------------
+    async def add_link(self, bucket_id: str, to_id: str, edge: str = "extends") -> bool:
+        """
+        Append a link to bucket's links array without duplicating.
+        给指定桶追加一条关联边，不重复。
+        """
+        file_path = self._find_bucket_file(bucket_id)
+        if not file_path:
+            return False
+        try:
+            post = frontmatter.load(file_path)
+            links = list(post.get("links", []))
+            # deduplicate: same to + same edge = skip
+            for existing in links:
+                if existing.get("to") == to_id and existing.get("edge") == edge:
+                    return True  # already exists
+            links.append({"to": to_id, "edge": edge})
+            post["links"] = links
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+            logger.info(f"Added link / 添加关联: {bucket_id} --{edge}--> {to_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to add link / 添加关联失败: {bucket_id}: {e}")
+            return False
 
     # ---------------------------------------------------------
     # Wikilink injection — DISABLED
