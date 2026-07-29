@@ -404,6 +404,50 @@ body {
 .vault-btn-primary:hover { background:var(--accent-light); }
 .vault-msg { font-size:12px; color:var(--text-secondary); margin-top:8px; }
 
+/* ===== Raw Search Panel ===== */
+.raw-search-bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.raw-search-bar input[type="text"] {
+  flex:1; min-width:140px; padding:8px 12px;
+  border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--bg2); color:var(--text); font-size:13px; font-family:inherit;
+}
+.raw-search-bar input[type="date"] {
+  padding:6px 8px; border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--bg2); color:var(--text); font-size:12px; font-family:inherit;
+}
+.raw-result-item {
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius-sm); padding:12px 14px; margin-bottom:8px;
+}
+.raw-result-meta {
+  display:flex; gap:10px; font-size:11px; color:var(--text-tertiary); margin-bottom:6px;
+}
+.raw-result-role {
+  display:inline-block; padding:1px 8px; border-radius:10px;
+  font-size:11px; font-weight:500;
+}
+.raw-role-user { background:var(--accent-subtle); color:var(--accent); }
+.raw-role-assistant { background:var(--feel-subtle); color:var(--feel); }
+.raw-result-text {
+  font-size:13px; line-height:1.7; color:var(--text);
+  white-space:pre-wrap; word-break:break-word;
+  max-height:200px; overflow-y:auto;
+}
+.raw-result-text mark {
+  background:var(--pinned-subtle); color:var(--text); border-radius:2px;
+  padding:0 2px;
+}
+.raw-result-count {
+  font-size:12px; color:var(--text-secondary); margin-bottom:12px;
+}
+.raw-load-more {
+  display:block; width:100%; padding:10px; margin-top:8px;
+  border:1px dashed var(--border); border-radius:var(--radius-sm);
+  background:transparent; color:var(--text-secondary); cursor:pointer;
+  font-size:13px; font-family:inherit; text-align:center;
+}
+.raw-load-more:hover { border-color:var(--accent); color:var(--accent); }
+
 .upload-zone {
   border:2px dashed var(--border); border-radius:var(--radius);
   padding:24px; text-align:center; cursor:pointer;
@@ -659,6 +703,25 @@ body {
 <!-- ===== PAGE: Vault (Raw + Upload) ===== -->
 <div class="page" id="page-vault">
   <h2 class="page-title" data-i18n="vault_title">Raw Vault</h2>
+
+  <!-- Search -->
+  <div class="vault-section">
+    <h3>🔍 检索原文</h3>
+    <div class="raw-search-bar">
+      <input type="text" id="raw-q" placeholder="关键词（留空则按时间倒序）">
+      <select class="vault-select" id="raw-role-filter">
+        <option value="">全部</option>
+        <option value="user">鸿湍</option>
+        <option value="assistant">陆沉</option>
+      </select>
+      <input type="date" id="raw-since" title="起始日期">
+      <input type="date" id="raw-until" title="截止日期">
+      <button class="vault-btn vault-btn-primary" onclick="rawSearch()">搜索</button>
+    </div>
+    <div id="raw-search-count" class="raw-result-count" style="display:none;"></div>
+    <div id="raw-search-results"></div>
+    <button id="raw-load-more" class="raw-load-more" style="display:none;" onclick="rawSearchMore()">加载更多</button>
+  </div>
 
   <!-- Quick entry -->
   <div class="vault-section">
@@ -1375,7 +1438,98 @@ async function submitNote(){
 }
 
 // ============================
-// Raw Vault
+// Raw Vault – Search
+// ============================
+let _rawOffset=0, _rawQuery='', _rawRole='', _rawSince='', _rawUntil='', _rawBatch=30;
+
+async function rawSearch(){
+  _rawOffset=0;
+  _rawQuery=document.getElementById('raw-q').value.trim();
+  _rawRole=document.getElementById('raw-role-filter').value;
+  _rawSince=document.getElementById('raw-since').value;
+  _rawUntil=document.getElementById('raw-until').value;
+  document.getElementById('raw-search-results').innerHTML='';
+  document.getElementById('raw-load-more').style.display='none';
+  document.getElementById('raw-search-count').style.display='none';
+  await rawFetchPage(false);
+}
+// Enter key triggers search
+document.addEventListener('DOMContentLoaded',()=>{
+  const qi=document.getElementById('raw-q');
+  if(qi) qi.addEventListener('keydown',e=>{if(e.key==='Enter')rawSearch();});
+});
+
+async function rawSearchMore(){ await rawFetchPage(true); }
+
+async function rawFetchPage(append){
+  const params=new URLSearchParams();
+  if(_rawQuery) params.set('q',_rawQuery);
+  if(_rawRole) params.set('role',_rawRole);
+  if(_rawSince) params.set('since',_rawSince);
+  if(_rawUntil) params.set('until',_rawUntil+'T23:59:59');
+  params.set('limit',String(_rawBatch));
+  // For pagination we use since/until + offset via the last item's created_at
+  // Simple approach: fetch more by adjusting limit
+  if(append) params.set('limit',String(_rawOffset+_rawBatch));
+
+  const container=document.getElementById('raw-search-results');
+  const countEl=document.getElementById('raw-search-count');
+  const moreBtn=document.getElementById('raw-load-more');
+
+  try{
+    const r=await authFetch(BASE+'/api/raw-search?'+params.toString());
+    if(!r) return;
+    const d=await r.json();
+    if(!d.ok){ container.innerHTML='<div class="empty-state">'+esc(d.error||'Error')+'</div>'; return; }
+    const items=d.items||[];
+
+    if(!append) container.innerHTML='';
+
+    // If appending, skip already-rendered items
+    const startIdx=append?_rawOffset:0;
+    const slice=items.slice(startIdx);
+
+    for(const item of slice){
+      container.insertAdjacentHTML('beforeend', rawResultCard(item));
+    }
+    _rawOffset=items.length;
+
+    countEl.textContent=(d.count||items.length)+' 条结果';
+    countEl.style.display='block';
+
+    // Show load more if we got a full batch
+    moreBtn.style.display=items.length>=_rawOffset&&items.length>=_rawBatch?'block':'none';
+
+    if(!items.length&&!append){
+      container.innerHTML='<div class="empty-state">没有找到匹配的原文</div>';
+    }
+  }catch(e){
+    container.innerHTML='<div class="empty-state">Error: '+esc(e.message)+'</div>';
+  }
+}
+
+function rawResultCard(item){
+  const roleLabel=item.role==='user'?'鸿湍':'陆沉';
+  const roleCls=item.role==='user'?'raw-role-user':'raw-role-assistant';
+  const time=item.created_at?item.created_at.replace('T',' ').slice(0,19):'';
+  let text=esc(item.text||'');
+  // Highlight query matches
+  if(_rawQuery){
+    const re=new RegExp('('+_rawQuery.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi');
+    text=text.replace(re,'<mark>$1</mark>');
+  }
+  return `<div class="raw-result-item">
+    <div class="raw-result-meta">
+      <span class="raw-result-role ${roleCls}">${roleLabel}</span>
+      <span>${time}</span>
+      ${item.source&&item.source!=='raw'?'<span>'+esc(item.source)+'</span>':''}
+    </div>
+    <div class="raw-result-text">${text}</div>
+  </div>`;
+}
+
+// ============================
+// Raw Vault – Write
 // ============================
 async function vaultSave(){
   const text=document.getElementById('vault-text').value.trim();

@@ -133,6 +133,7 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
 
     # 第4刀 4b
     mcp.custom_route("/api/ingest-raw", methods=["POST"])(ingest_raw)
+    mcp.custom_route("/api/raw-search", methods=["GET"])(api_raw_search)
 
     # Private room v0.1: isolated owner-gated endpoints.
     mcp.custom_route("/api/room_open", methods=["POST"])(make_endpoint(room_open_sync, _private_db_path))
@@ -1730,6 +1731,34 @@ async def api_wonder(request):
     if not success:
         return JSONResponse({"error": "更新失败"}, status_code=500)
     return JSONResponse({"ok": True, "wonder": new_value})
+
+
+# =============================================================
+# Raw Vault 检索端点 (dashboard session 鉴权)
+# =============================================================
+async def api_raw_search(request):
+    """供 dashboard Vault 页面使用的原文检索端点。
+    GET /api/raw-search?q=关键词&role=user&since=2026-01-01&until=2026-07-29&limit=20
+    鉴权：dashboard session cookie（同 /api/buckets 等端点）。"""
+    from starlette.responses import JSONResponse
+    err = _require_auth(request)
+    if err:
+        return err
+    if _raw_store is None:
+        return JSONResponse({"ok": False, "error": "raw store not wired"}, status_code=500)
+    q = request.query_params.get("q", "").strip()
+    role = request.query_params.get("role", "").strip()
+    since = request.query_params.get("since", "").strip()
+    until = request.query_params.get("until", "").strip()
+    source = request.query_params.get("source", "").strip()
+    try:
+        limit = int(request.query_params.get("limit", "30"))
+    except (ValueError, TypeError):
+        limit = 30
+    result = _raw_store.search(
+        query=q, limit=limit, role=role, since=since, until=until, source=source,
+    )
+    return JSONResponse(result)
 
 
 # =============================================================
