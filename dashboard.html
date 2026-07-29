@@ -387,7 +387,8 @@ body {
   font-family:inherit; font-size:14px; line-height:1.6;
   resize:vertical;
 }
-.vault-row { display:flex; gap:8px; margin-top:10px; align-items:center; }
+.vault-row { display:flex; gap:8px; margin-top:10px; align-items:center; flex-wrap:wrap; }
+.vault-row > * { min-width:0; }
 .vault-select {
   padding:8px 12px; border:1px solid var(--border);
   border-radius:var(--radius-sm); background:var(--bg2);
@@ -397,6 +398,7 @@ body {
   padding:8px 20px; border:none; border-radius:20px;
   font-size:13px; font-weight:500; cursor:pointer;
   font-family:inherit; transition:all .15s;
+  white-space:nowrap; flex-shrink:0;
 }
 .vault-btn-primary {
   background:var(--accent); color:#fff;
