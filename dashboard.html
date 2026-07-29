@@ -405,16 +405,26 @@ body {
 .vault-msg { font-size:12px; color:var(--text-secondary); margin-top:8px; }
 
 /* ===== Raw Search Panel ===== */
-.raw-search-bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-.raw-search-bar input[type="text"] {
-  flex:1; min-width:140px; padding:8px 12px;
+.raw-search-row { display:flex; gap:8px; margin-bottom:8px; align-items:center; }
+.raw-search-row input[type="text"] {
+  flex:1; min-width:0; padding:8px 12px;
   border:1px solid var(--border); border-radius:var(--radius-sm);
   background:var(--bg2); color:var(--text); font-size:13px; font-family:inherit;
 }
-.raw-search-bar input[type="date"] {
-  padding:6px 8px; border:1px solid var(--border); border-radius:var(--radius-sm);
+.raw-search-row input[type="date"] {
+  flex:1; min-width:0; padding:6px 8px; border:1px solid var(--border); border-radius:var(--radius-sm);
   background:var(--bg2); color:var(--text); font-size:12px; font-family:inherit;
 }
+.raw-date-label {
+  font-size:12px; color:var(--text-secondary); white-space:nowrap;
+}
+.raw-sort-toggle {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:4px 10px; border:1px solid var(--border); border-radius:var(--radius-sm);
+  background:var(--bg2); color:var(--text-secondary); cursor:pointer;
+  font-size:12px; font-family:inherit; white-space:nowrap;
+}
+.raw-sort-toggle:hover { border-color:var(--accent); color:var(--accent); }
 .raw-result-item {
   background:var(--surface); border:1px solid var(--border);
   border-radius:var(--radius-sm); padding:12px 14px; margin-bottom:8px;
@@ -707,16 +717,23 @@ body {
   <!-- Search -->
   <div class="vault-section">
     <h3>🔍 检索原文</h3>
-    <div class="raw-search-bar">
+    <div class="raw-search-row">
       <input type="text" id="raw-q" placeholder="关键词（留空则按时间倒序）">
       <select class="vault-select" id="raw-role-filter">
         <option value="">全部</option>
         <option value="user">鸿湍</option>
         <option value="assistant">陆沉</option>
       </select>
-      <input type="date" id="raw-since" title="起始日期">
-      <input type="date" id="raw-until" title="截止日期">
+    </div>
+    <div class="raw-search-row">
+      <span class="raw-date-label">从</span>
+      <input type="date" id="raw-since">
+      <span class="raw-date-label">到</span>
+      <input type="date" id="raw-until">
+    </div>
+    <div class="raw-search-row">
       <button class="vault-btn vault-btn-primary" onclick="rawSearch()">搜索</button>
+      <button class="raw-sort-toggle" id="raw-sort-btn" onclick="rawToggleSort()">↓ 倒序</button>
     </div>
     <div id="raw-search-count" class="raw-result-count" style="display:none;"></div>
     <div id="raw-search-results"></div>
@@ -1441,6 +1458,14 @@ async function submitNote(){
 // Raw Vault – Search
 // ============================
 let _rawOffset=0, _rawQuery='', _rawRole='', _rawSince='', _rawUntil='', _rawBatch=30;
+let _rawSortAsc=false; // false=倒序(newest first), true=正序(oldest first)
+
+function rawToggleSort(){
+  _rawSortAsc=!_rawSortAsc;
+  document.getElementById('raw-sort-btn').textContent=_rawSortAsc?'↑ 正序':'↓ 倒序';
+  const container=document.getElementById('raw-search-results');
+  if(container.children.length>0) rawSearch();
+}
 
 async function rawSearch(){
   _rawOffset=0;
@@ -1453,7 +1478,6 @@ async function rawSearch(){
   document.getElementById('raw-search-count').style.display='none';
   await rawFetchPage(false);
 }
-// Enter key triggers search
 document.addEventListener('DOMContentLoaded',()=>{
   const qi=document.getElementById('raw-q');
   if(qi) qi.addEventListener('keydown',e=>{if(e.key==='Enter')rawSearch();});
@@ -1467,10 +1491,7 @@ async function rawFetchPage(append){
   if(_rawRole) params.set('role',_rawRole);
   if(_rawSince) params.set('since',_rawSince);
   if(_rawUntil) params.set('until',_rawUntil+'T23:59:59');
-  params.set('limit',String(_rawBatch));
-  // For pagination we use since/until + offset via the last item's created_at
-  // Simple approach: fetch more by adjusting limit
-  if(append) params.set('limit',String(_rawOffset+_rawBatch));
+  params.set('limit',String(append?_rawOffset+_rawBatch:_rawBatch));
 
   const container=document.getElementById('raw-search-results');
   const countEl=document.getElementById('raw-search-count');
@@ -1481,25 +1502,18 @@ async function rawFetchPage(append){
     if(!r) return;
     const d=await r.json();
     if(!d.ok){ container.innerHTML='<div class="empty-state">'+esc(d.error||'Error')+'</div>'; return; }
-    const items=d.items||[];
+    let items=d.items||[];
+    if(_rawSortAsc) items=[...items].reverse();
 
     if(!append) container.innerHTML='';
-
-    // If appending, skip already-rendered items
     const startIdx=append?_rawOffset:0;
-    const slice=items.slice(startIdx);
-
-    for(const item of slice){
+    for(const item of items.slice(startIdx)){
       container.insertAdjacentHTML('beforeend', rawResultCard(item));
     }
     _rawOffset=items.length;
-
     countEl.textContent=(d.count||items.length)+' 条结果';
     countEl.style.display='block';
-
-    // Show load more if we got a full batch
-    moreBtn.style.display=items.length>=_rawOffset&&items.length>=_rawBatch?'block':'none';
-
+    moreBtn.style.display=items.length>=_rawBatch?'block':'none';
     if(!items.length&&!append){
       container.innerHTML='<div class="empty-state">没有找到匹配的原文</div>';
     }
@@ -1513,7 +1527,6 @@ function rawResultCard(item){
   const roleCls=item.role==='user'?'raw-role-user':'raw-role-assistant';
   const time=item.created_at?item.created_at.replace('T',' ').slice(0,19):'';
   let text=esc(item.text||'');
-  // Highlight query matches
   if(_rawQuery){
     const re=new RegExp('('+_rawQuery.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi');
     text=text.replace(re,'<mark>$1</mark>');
