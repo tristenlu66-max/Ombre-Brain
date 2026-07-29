@@ -441,8 +441,18 @@ body {
 .raw-result-text {
   font-size:13px; line-height:1.7; color:var(--text);
   white-space:pre-wrap; word-break:break-word;
-  max-height:200px; overflow-y:auto;
 }
+.raw-result-text.collapsed {
+  max-height:120px; overflow:hidden;
+  -webkit-mask-image:linear-gradient(to bottom, #000 60%, transparent 100%);
+  mask-image:linear-gradient(to bottom, #000 60%, transparent 100%);
+}
+.raw-expand-btn {
+  display:inline-block; margin-top:4px; padding:2px 0;
+  border:none; background:none; color:var(--accent);
+  font-size:12px; cursor:pointer; font-family:inherit;
+}
+.raw-expand-btn:hover { text-decoration:underline; }
 .raw-result-text mark {
   background:var(--pinned-subtle); color:var(--text); border-radius:2px;
   padding:0 2px;
@@ -1457,7 +1467,7 @@ async function submitNote(){
 // ============================
 // Raw Vault – Search
 // ============================
-let _rawOffset=0, _rawQuery='', _rawRole='', _rawSince='', _rawUntil='', _rawBatch=30;
+let _rawOffset=0, _rawQuery='', _rawRole='', _rawSince='', _rawUntil='', _rawBatch=100;
 let _rawSortAsc=false; // false=倒序(newest first), true=正序(oldest first)
 
 function rawToggleSort(){
@@ -1522,6 +1532,7 @@ async function rawFetchPage(append){
   }
 }
 
+let _rawCardId=0;
 function rawResultCard(item){
   const roleLabel=item.role==='user'?'鸿湍':'陆沉';
   const roleCls=item.role==='user'?'raw-role-user':'raw-role-assistant';
@@ -1531,14 +1542,23 @@ function rawResultCard(item){
     const re=new RegExp('('+_rawQuery.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','gi');
     text=text.replace(re,'<mark>$1</mark>');
   }
+  const uid='raw-txt-'+(_rawCardId++);
+  const long=(item.text||'').length>200;
   return `<div class="raw-result-item">
     <div class="raw-result-meta">
       <span class="raw-result-role ${roleCls}">${roleLabel}</span>
       <span>${time}</span>
       ${item.source&&item.source!=='raw'?'<span>'+esc(item.source)+'</span>':''}
     </div>
-    <div class="raw-result-text">${text}</div>
+    <div class="raw-result-text${long?' collapsed':''}" id="${uid}">${text}</div>
+    ${long?`<button class="raw-expand-btn" onclick="rawToggleExpand('${uid}',this)">展开全文</button>`:''}
   </div>`;
+}
+function rawToggleExpand(uid,btn){
+  const el=document.getElementById(uid);
+  if(!el) return;
+  const collapsed=el.classList.toggle('collapsed');
+  btn.textContent=collapsed?'展开全文':'收起';
 }
 
 // ============================
