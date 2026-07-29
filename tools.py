@@ -12,6 +12,7 @@
 
 import os
 import random
+import re
 import asyncio
 import logging
 from datetime import datetime
@@ -201,8 +202,9 @@ async def breath(
     importance_min: int = -1,
     since: str = "",
     until: str = "",
+    bucket_id: str = "",
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。max_tokens控制返回总token上限(默认12000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。since/until用ISO日期(如2026-06-01)开时间窗,语法同raw_search:空query+时间窗=窗口内桶按created_at正序(叙事顺序,wander桶排除,钉选不豁免);query+时间窗=窗口内检索。until含当天;只给一端=从since到现在/从最早到until。"""
+    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。传bucket_id或把12位hex桶ID放进query时走精确检索,跳过模糊/向量/随机召回。max_tokens控制返回总token上限(默认12000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。since/until用ISO日期(如2026-06-01)开时间窗,语法同raw_search:空query+时间窗=窗口内桶按created_at正序(叙事顺序,wander桶排除,钉选不豁免);query+时间窗=窗口内检索。until含当天;只给一端=从since到现在/从最早到until。"""
     # Snapshot BEFORE on_interaction: the overnight attachment climb must be
     # visible, not erased by the act of looking.
     pre = None
@@ -215,7 +217,7 @@ async def breath(
         query=query, max_tokens=max_tokens, domain=domain,
         valence=valence, arousal=arousal,
         max_results=max_results, importance_min=importance_min,
-        since=since, until=until,
+        since=since, until=until, bucket_id=bucket_id,
     )
     try:
         block = _desire_engine.state_block(pre)
@@ -295,6 +297,29 @@ def _is_wander_bucket(meta: dict) -> bool:
     return "wander" in str(meta.get("name", "")).lower()
 
 
+_BUCKET_ID_RE = re.compile(r"^[0-9a-f]{12}$", re.IGNORECASE)
+
+
+async def _format_exact_bucket(bucket: dict, max_tokens: int) -> str:
+    """Format one explicitly requested bucket without semantic side effects."""
+    bucket_id = bucket["id"]
+    metadata = {k: v for k, v in bucket.get("metadata", {}).items() if k != "tags"}
+    try:
+        summary = await _dehydrator.dehydrate(
+            strip_wikilinks(bucket.get("content", "")),
+            metadata,
+        )
+    except Exception as e:
+        logger.warning(f"Exact bucket dehydrate failed: {bucket_id}: {e}")
+        summary = strip_wikilinks(bucket.get("content", ""))
+
+    if count_tokens_approx(summary) > max_tokens:
+        summary = strip_wikilinks(bucket.get("content", ""))
+
+    _fire_hit_tracking([bucket_id])
+    return f"[精确检索] [bucket_id:{bucket_id}] {summary}"
+
+
 async def _breath_core(
     query: str = "",
     max_tokens: int = 12000,
@@ -305,6 +330,7 @@ async def _breath_core(
     importance_min: int = -1,
     since: str = "",
     until: str = "",
+    bucket_id: str = "",
 ) -> str:
     """Core retrieval logic for breath."""
     await _decay_engine.ensure_started()
@@ -323,6 +349,23 @@ async def _breath_core(
     if dt_since and dt_until and dt_since > dt_until:
         return f"时间窗为空:since({since}) 晚于 until({until}),没有可返回的记忆。"
     has_window = bool(dt_since or dt_until)
+
+    # Explicit bucket lookup must bypass fuzzy search, embeddings, random
+    # surfacing, and pinned/resolved filtering. An exact ID is an explicit
+    # request to inspect that bucket.
+    requested_id = (bucket_id or "").strip()
+    explicit_bucket_id = bool(requested_id)
+    if not requested_id:
+        candidate = (query or "").strip()
+        if _BUCKET_ID_RE.fullmatch(candidate):
+            requested_id = candidate
+    if requested_id:
+        if not explicit_bucket_id and not _BUCKET_ID_RE.fullmatch(requested_id):
+            return f"无效的 bucket_id: {requested_id}"
+        bucket = await _bucket_mgr.get(requested_id)
+        if not bucket:
+            return f"未找到记忆桶: {requested_id}"
+        return await _format_exact_bucket(bucket, max_tokens)
 
     def _in_window(meta: dict) -> bool:
         dt = _bucket_created_dt(meta)
