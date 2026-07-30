@@ -24,6 +24,8 @@ import logging
 import asyncio
 import json as _json_lib
 from private_rooms import make_endpoint, room_open_sync, room_put_sync, room_list_sync, room_del_sync
+from todos import TodoStore
+from cloudflare_access import verify_request as verify_cloudflare_access
 
 from utils import strip_wikilinks, count_tokens_approx, sanitize_name
 import frontmatter
@@ -42,6 +44,7 @@ _import_engine = None
 _fire_webhook = None
 _raw_store = None   # 第4刀 4a
 _private_db_path = None
+_todo_store = None
 
 # --- Session store (lost on restart, 7-day expiry) ---
 _sessions: dict[str, float] = {}
@@ -49,10 +52,10 @@ _sessions: dict[str, float] = {}
 
 def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
                     embedding_engine, desire_engine, import_engine, fire_webhook,
-                    raw_store=None, private_db_path=None):   # 第4刀 4a 签名
+                    raw_store=None, private_db_path=None, todo_store=None):   # 第4刀 4a 签名
     """Called once from server.py to inject shared instances and register all routes."""
     global _mcp, _config, _bucket_mgr, _dehydrator, _decay_engine
-    global _embedding_engine, _desire_engine, _import_engine, _fire_webhook, _raw_store, _private_db_path   # 4a
+    global _embedding_engine, _desire_engine, _import_engine, _fire_webhook, _raw_store, _private_db_path, _todo_store   # 4a
     _mcp = mcp
     _config = config
     _bucket_mgr = bucket_mgr
@@ -64,6 +67,7 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     _fire_webhook = fire_webhook
     _raw_store = raw_store
     _private_db_path = private_db_path
+    _todo_store = todo_store or TodoStore(os.path.join(os.path.dirname(raw_store.db_path), "todos.sqlite"))
 
     # --- Register all routes ---
     mcp.custom_route("/", methods=["GET"])(root_redirect)
@@ -140,6 +144,9 @@ def register_routes(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.custom_route("/api/room_put", methods=["POST"])(make_endpoint(room_put_sync, _private_db_path))
     mcp.custom_route("/api/room_list", methods=["POST"])(make_endpoint(room_list_sync, _private_db_path))
     mcp.custom_route("/api/room_del", methods=["POST"])(make_endpoint(room_del_sync, _private_db_path))
+    mcp.custom_route("/api/todos", methods=["GET", "POST"])(api_todos)
+    mcp.custom_route("/api/todos/reorder", methods=["POST"])(api_todos_reorder)
+    mcp.custom_route("/api/todos/{todo_id}", methods=["PATCH", "DELETE"])(api_todo_detail)
 
 
 # =============================================================
@@ -219,6 +226,14 @@ def _require_auth(request):
             status_code=401,
         )
     return None
+
+
+def _require_todo_auth(request):
+    """Accept either the existing Brain session or a verified Cloudflare Access JWT."""
+    from starlette.responses import JSONResponse
+    if _is_authenticated(request) or verify_cloudflare_access(request):
+        return None
+    return JSONResponse({"error": "Unauthorized"}, status_code=401)
 
 
 # =============================================================
@@ -522,6 +537,68 @@ async def desire_panel(request):
 # =============================================================
 # Dashboard API
 # =============================================================
+async def api_todos(request):
+    """Todo list API used by the private TE House homepage."""
+    from starlette.responses import JSONResponse
+    err = _require_todo_auth(request)
+    if err:
+        return err
+    if request.method == "GET":
+        return JSONResponse({"todos": _todo_store.list()})
+    try:
+        body = await request.json()
+        item = _todo_store.add(body.get("title"), body.get("priority", 2))
+        return JSONResponse(item, status_code=201)
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.exception("Todo create failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_todo_detail(request):
+    from starlette.responses import JSONResponse
+    err = _require_todo_auth(request)
+    if err:
+        return err
+    todo_id = request.path_params["todo_id"]
+    if request.method == "DELETE":
+        if not _todo_store.delete(todo_id):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"ok": True})
+    try:
+        body = await request.json()
+        item = _todo_store.update(
+            todo_id,
+            title=body.get("title"),
+            priority=body.get("priority"),
+            status=body.get("status"),
+        )
+        if item is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(item)
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.exception("Todo update failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+async def api_todos_reorder(request):
+    from starlette.responses import JSONResponse
+    err = _require_todo_auth(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        return JSONResponse({"todos": _todo_store.reorder(body.get("ids", []))})
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.exception("Todo reorder failed")
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
 async def api_buckets(request):
     from starlette.responses import JSONResponse
     err = _require_auth(request)

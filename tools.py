@@ -19,6 +19,7 @@ from datetime import datetime
 
 from utils import strip_wikilinks, count_tokens_approx
 from private_rooms import room_open_sync, room_put_sync, room_list_sync, room_del_sync
+from todos import TodoStore
 
 logger = logging.getLogger("ombre_brain")
 
@@ -32,14 +33,15 @@ _embedding_engine = None
 _desire_engine = None
 _fire_webhook = None
 _raw_store = None   # 第3刀 3a
+_todo_store = None
 
 
 def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
                    embedding_engine, desire_engine, fire_webhook,
-                   raw_store=None, private_db_path=None):   # 第3刀 3a 签名
+                   raw_store=None, private_db_path=None, todo_store=None):   # 第3刀 3a 签名
     """Called once from server.py to inject shared instances."""
     global _mcp, _config, _bucket_mgr, _dehydrator, _decay_engine
-    global _embedding_engine, _desire_engine, _fire_webhook, _raw_store   # 3a
+    global _embedding_engine, _desire_engine, _fire_webhook, _raw_store, _todo_store   # 3a
     _mcp = mcp
     _config = config
     _bucket_mgr = bucket_mgr
@@ -49,6 +51,7 @@ def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     _desire_engine = desire_engine
     _fire_webhook = fire_webhook
     _raw_store = raw_store
+    _todo_store = todo_store or TodoStore(os.path.join(os.path.dirname(raw_store.db_path), "todos.sqlite"))
 
     # --- Register all 6 tools on the mcp instance ---
     mcp.tool()(breath)
@@ -66,6 +69,35 @@ def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.tool()(room_put)
     mcp.tool()(room_list)
     mcp.tool()(room_del)
+    mcp.tool()(todos)
+
+
+async def todos(action: str = "list", owner: str = "evan", todo_id: str = "",
+                title: str = "", priority: int = -1) -> str:
+    """Manage the private TE House todo list. Actions: list, add, edit, complete, reopen, delete."""
+    import json
+    if owner != "evan":
+        return '{"error":"forbidden"}'
+    try:
+        if action == "list":
+            result = {"todos": _todo_store.list()}
+        elif action == "add":
+            result = _todo_store.add(title, 2 if priority < 1 else priority)
+        elif action == "edit":
+            result = _todo_store.update(todo_id, title=title or None, priority=priority if priority > 0 else None)
+            if result is None:
+                return '{"error":"not_found"}'
+        elif action in ("complete", "reopen"):
+            result = _todo_store.update(todo_id, status="completed" if action == "complete" else "active")
+            if result is None:
+                return '{"error":"not_found"}'
+        elif action == "delete":
+            result = {"ok": _todo_store.delete(todo_id)}
+        else:
+            return '{"error":"unknown_action"}'
+        return json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
 
 def _private_error(exc: Exception) -> str:
