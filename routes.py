@@ -1346,14 +1346,28 @@ async def api_note_create(request):
 
     title = (body.get("title") or "").strip() or None
 
+    # V/A: use caller value if valid 0–1, else default
+    raw_v = body.get("valence")
+    raw_a = body.get("arousal")
+    try:
+        v = float(raw_v)
+        valence = v if 0 <= v <= 1 else 0.5
+    except (TypeError, ValueError):
+        valence = 0.5
+    try:
+        a = float(raw_a)
+        arousal = a if 0 <= a <= 1 else 0.3
+    except (TypeError, ValueError):
+        arousal = 0.3
+
     bucket_id = await _bucket_mgr.create(
         content=content,
         bucket_type="note",
         name=title,
         tags=["鸿湍笔记"],
         importance=5,
-        valence=0.5,
-        arousal=0.3,
+        valence=valence,
+        arousal=arousal,
     )
 
     return JSONResponse({"id": bucket_id, "created": True})

@@ -185,13 +185,17 @@ def strip_wikilinks(text: str) -> str:
 
 def sanitize_name(name: str) -> str:
     """
-    Sanitize bucket name, keeping only safe characters.
-    Prevents path traversal attacks (e.g. ../../etc/passwd).
-    清洗桶名称，只保留安全字符。防止路径遍历攻击。
+    Sanitize bucket name: block path traversal and control chars,
+    but keep common punctuation (%!&+()~@#:;,.'\"? etc.)
+    清洗桶名称：阻止路径遍历和控制字符，保留常见标点。
     """
     if not isinstance(name, str):
         return "unnamed"
-    cleaned = re.sub(r"[^\w\s\u4e00-\u9fff-]", "", name, flags=re.UNICODE)
+    # Strip path separators and control characters (U+0000–U+001F, U+007F)
+    cleaned = re.sub(r"[/\\]", "", name)
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", cleaned)
+    # Collapse consecutive dots to prevent traversal (.. → .)
+    cleaned = re.sub(r"\.{2,}", ".", cleaned)
     cleaned = cleaned.strip()[:80]
     return cleaned if cleaned else "unnamed"
 
