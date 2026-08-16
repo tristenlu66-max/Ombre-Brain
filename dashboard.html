@@ -905,6 +905,10 @@ body {
     <h3 class="modal-title" data-i18n="note_modal_title">鸿湍's Note</h3>
     <input type="text" id="note-title" data-i18n-ph="note_title_ph" style="display:block;width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg2);color:var(--text);font-size:14px;margin-bottom:8px;font-family:inherit;">
     <textarea id="note-content" data-i18n-ph="note_content_ph" style="display:block;width:100%;min-height:140px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg2);color:var(--text);font-size:14px;font-family:'Cormorant Garamond',serif;line-height:1.7;resize:vertical;"></textarea>
+    <div style="display:flex;gap:16px;margin-top:8px;align-items:center;opacity:0.55;transition:opacity .2s;" onmouseenter="this.style.opacity='0.85'" onmouseleave="this.style.opacity='0.55'">
+      <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);flex:1;"><span>V</span><input type="range" id="note-valence" min="0" max="1" step="0.1" value="0.5" style="flex:1;height:3px;accent-color:var(--note);cursor:pointer;"><span id="note-v-val" style="min-width:22px;text-align:right;">0.5</span></label>
+      <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-secondary);flex:1;"><span>A</span><input type="range" id="note-arousal" min="0" max="1" step="0.1" value="0.3" style="flex:1;height:3px;accent-color:var(--note);cursor:pointer;"><span id="note-a-val" style="min-width:22px;text-align:right;">0.3</span></label>
+    </div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
       <button class="vault-btn" style="border:1px solid var(--border);color:var(--text-secondary);" onclick="closeNoteForm()" data-i18n="cancel">Cancel</button>
       <button class="vault-btn" style="background:var(--note);color:#fff;" onclick="submitNote()" data-i18n="save">Save</button>
@@ -1454,13 +1458,16 @@ async function toggleTlContent(bid,uid){
 // Note form
 // ============================
 function openNoteForm(){ document.getElementById('note-modal').classList.add('open'); setTimeout(()=>document.getElementById('note-content').focus(),100); }
-function closeNoteForm(){ document.getElementById('note-modal').classList.remove('open'); }
+function closeNoteForm(){ document.getElementById('note-modal').classList.remove('open'); document.getElementById('note-valence').value='0.5'; document.getElementById('note-arousal').value='0.3'; document.getElementById('note-v-val').textContent='0.5'; document.getElementById('note-a-val').textContent='0.3'; }
+document.addEventListener('DOMContentLoaded',()=>{ document.getElementById('note-valence').addEventListener('input',e=>document.getElementById('note-v-val').textContent=e.target.value); document.getElementById('note-arousal').addEventListener('input',e=>document.getElementById('note-a-val').textContent=e.target.value); });
 async function submitNote(){
   const c=document.getElementById('note-content').value.trim();
   if(!c){document.getElementById('note-msg').textContent='…'; return;}
   const title=document.getElementById('note-title').value.trim()||undefined;
+  const valence=parseFloat(document.getElementById('note-valence').value);
+  const arousal=parseFloat(document.getElementById('note-arousal').value);
   try{
-    const r=await fetch(BASE+'/api/note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:c,title})});
+    const r=await fetch(BASE+'/api/note',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content:c,title,valence,arousal})});
     if(r.ok){ closeNoteForm(); document.getElementById('note-content').value=''; document.getElementById('note-title').value=''; }
     else { const e=await r.json(); document.getElementById('note-msg').textContent=e.error||'Failed'; }
   }catch(e){ document.getElementById('note-msg').textContent='Error'; }
