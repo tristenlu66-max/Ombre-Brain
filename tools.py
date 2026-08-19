@@ -973,8 +973,19 @@ async def hold(
 
     # --- Feel mode ---
     if feel:
-        feel_valence = valence if 0 <= valence <= 1 else 0.5
-        feel_arousal = arousal if 0 <= arousal <= 1 else 0.3
+        feel_name = name.strip() if name and name.strip() else None
+        # V/A: honour explicit values; fall back to dehydrator analysis
+        if 0 <= valence <= 1 and 0 <= arousal <= 1:
+            feel_valence = valence
+            feel_arousal = arousal
+        else:
+            try:
+                feel_analysis = await _dehydrator.analyze(content)
+                feel_valence = valence if 0 <= valence <= 1 else feel_analysis.get("valence", 0.5)
+                feel_arousal = arousal if 0 <= arousal <= 1 else feel_analysis.get("arousal", 0.3)
+            except Exception:
+                feel_valence = valence if 0 <= valence <= 1 else 0.5
+                feel_arousal = arousal if 0 <= arousal <= 1 else 0.3
         bucket_id = await _bucket_mgr.create(
             content=content,
             tags=[],
@@ -982,7 +993,7 @@ async def hold(
             domain=[],
             valence=feel_valence,
             arousal=feel_arousal,
-            name=None,
+            name=feel_name,
             bucket_type="feel",
         )
         try:
