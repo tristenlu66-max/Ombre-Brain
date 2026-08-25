@@ -70,6 +70,7 @@ def register_tools(*, mcp, config, bucket_mgr, dehydrator, decay_engine,
     mcp.tool()(room_list)
     mcp.tool()(room_del)
     mcp.tool()(todos)
+    mcp.tool()(clock)
 
 
 async def todos(action: str = "list", owner: str = "evan", todo_id: str = "",
@@ -1606,3 +1607,15 @@ async def raw_search(
         when = (it.get("created_at") or "")[:16]
         lines.append(f"[{when}] [{it.get('role')}] {it.get('text')}")
     return "\n".join(lines)
+
+async def clock() -> str:
+    """查看鸿湍那边的当前时间。返回新加坡时间(UTC+8)的日期、星期、时分秒。"""
+    from datetime import timezone, timedelta
+    sgt = timezone(timedelta(hours=8))
+    now = datetime.now(sgt)
+    weekdays = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    weekday = weekdays[now.weekday()]
+    return (
+        f"{now.strftime('%Y-%m-%d')} {weekday} "
+        f"{now.strftime('%H:%M:%S')} SGT (UTC+8)"
+    )
