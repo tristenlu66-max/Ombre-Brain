@@ -991,7 +991,7 @@ class DesireEngine:
             log.append({
                 "ts": now,
                 "intent": intent_key,
-                "preview": content_preview[:60],
+                "preview": content_preview[:120],
             })
             # keep only last 48h of log / 只保留48小时内的记录
             cutoff = now - 86400 * 2

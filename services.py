@@ -52,6 +52,36 @@ async def telegram_send(text: str) -> bool:
         return False
 
 
+def _is_too_similar(new_msg: str, send_log: list, threshold: float = 0.55) -> bool:
+    """Check if new_msg is too similar to recent sends (last 48h).
+    检查新消息是否与最近发送的消息过于相似。
+    Uses character-level bigram overlap (Dice coefficient).
+    用字符bigram重叠度（Dice系数）做简易判断。"""
+    def _bigrams(s: str) -> set:
+        s = s.strip().lower()
+        return {s[i:i+2] for i in range(len(s) - 1)} if len(s) >= 2 else {s}
+
+    new_bi = _bigrams(new_msg)
+    if not new_bi:
+        return False
+    for entry in send_log[-12:]:  # check last 12 sends (~48h)
+        prev = entry.get("preview", "")
+        if not prev:
+            continue
+        prev_bi = _bigrams(prev)
+        if not prev_bi:
+            continue
+        overlap = len(new_bi & prev_bi)
+        dice = (2.0 * overlap) / (len(new_bi) + len(prev_bi))
+        if dice >= threshold:
+            logger.info(
+                f"Dedup blocked / 去重拦截: dice={dice:.2f} ≥ {threshold} "
+                f"new='{new_msg[:30]}…' prev='{prev[:30]}…'"
+            )
+            return True
+    return False
+
+
 async def exec_generate_message(intent: dict, memories: str) -> str:
     """Call LLM to generate an Evan-voice Telegram message.
     调外部LLM生成Evan语气的Telegram消息。"""
@@ -174,6 +204,12 @@ async def on_desire_tick(snapshot: dict, *, desire_engine, bucket_mgr,
     message = await exec_generate_message(intent, memories)
     if not message:
         logger.warning("Execution aborted: empty LLM response / 中止：LLM返回空")
+        return
+
+    # 2.5 Dedup check / 去重检查
+    send_log = desire_engine.state.get("exec_send_log", [])
+    if _is_too_similar(message, send_log):
+        logger.info("Execution aborted: too similar to recent send / 中止：与近期消息过于相似")
         return
 
     # 3. Send via Telegram / 发Telegram
