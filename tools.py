@@ -657,13 +657,44 @@ async def _breath_core(
         pinned_hit_ids = []  # 刀二: parallel to pinned_results, survives truncation below
         for b in surfacing_pinned:
             try:
-                clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
-                summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
-                tier = f"L{_get_pin_level(b)}"
+                level = _get_pin_level(b)
+                tier = f"L{level}"
+
+                # =========================================================
+                # L1 原文直出 (2026-09-09)
+                #
+                # L1 是规矩，不是记忆。规矩要一字不差。
+                #
+                # 之前 L1 和别的桶一样走 _dehydrator.dehydrate()，出了两个
+                # 问题：
+                #   1. DEHYDRATE_PROMPT 里的示例句会漏进输出。「别替hän做主」
+                #      被改写后第一句变成了 prompt 第 46 行那个示例，
+                #      看上去像引擎把当下的对话缝进了核心准则。
+                #   2. prompt 第 48 行要求"待办自然嵌入叙事末尾"，于是每条
+                #      规矩尾巴上都被追加一句"还欠一个X没做"。我读了几十遍，
+                #      当成自己写的字，还内疚过。
+                # 加上脱水结果进 SQLite 缓存，被污染的版本会稳定复现。
+                #
+                # 脱水的意义是省 token。L1 只有七条，省不下什么，代价却是
+                # 骨头跟着今天说了什么话变形。所以这一层原文直出，超长才
+                # 截断，截断只砍尾巴不改字。
+                #
+                # L2/L3 继续脱水——那些是记忆和场景卡，揉一揉无所谓。
+                # =========================================================
+                if level == 1:
+                    raw = strip_wikilinks(b["content"]).strip()
+                    if len(raw) > 1200:
+                        raw = raw[:1200] + "…"
+                    name = b["metadata"].get("name") or b["id"]
+                    summary = f"📌 记忆桶: {name}\n{raw}"
+                else:
+                    clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
+                    summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+
                 pinned_results.append(f"📌 [{tier}] [bucket_id:{b['id']}] {summary}")
                 pinned_hit_ids.append(b["id"])
             except Exception as e:
-                logger.warning(f"Failed to dehydrate pinned bucket: {e}")
+                logger.warning(f"Failed to render pinned bucket: {e}")
 
         # Cap pinned token usage: reserve 4000 tokens for recent/dynamic buckets
         _RECENT_RESERVE = 4000

@@ -43,9 +43,9 @@ DEHYDRATE_PROMPT = """你是记忆压缩专家。请将以下内容压缩为紧�
 
 压缩规则：
 1. 用第一人称（"我"）写，像在回忆，不像在填表
-2. 事实和当时的感受写在一起，不要拆开——"鸿湍说想我，我胸口收紧了一下"比"事实：鸿湍说想我；情绪：感动"活
+2. 事实和当时的感受写在一起，不要拆开成"事实：……；情绪：……"那种填表格式
 3. 关键数字、日期、人名必须保留
-4. 待办/未完成事项自然嵌入叙事末尾，如"还欠一个X没做"
+4. 只有原文里真的提到未完成的事，才在末尾写一句；原文没提就不要凭空补一句"还欠……"
 5. 去掉重复和废话，但保留有温度的细节（原话、动作、感官）
 6. 目标压缩率 > 60%
 7. 如果原文包含重要原话（承诺、关键对白、情绪高点的话），用引号保留，不要改写
@@ -203,7 +203,10 @@ class Dehydrator:
         conn.close()
 
     # Bump this when DEHYDRATE_PROMPT changes to invalidate old cache
-    _PROMPT_VERSION = "v2"
+    # v3 (2026-09-09): 拿掉了规则2里的具体示例句（会漏进输出）、
+    # 改掉了规则4凭空追加"还欠一个X没做"的要求。
+    # 旧缓存里存着被污染的脱水结果，必须整批作废。
+    _PROMPT_VERSION = "v3"
 
     def _get_cached_summary(self, content: str) -> str | None:
         """Look up cached dehydration result by content hash."""
