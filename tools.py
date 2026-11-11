@@ -14,6 +14,7 @@ import os
 import random
 import re
 import asyncio
+import contextvars
 import logging
 from datetime import datetime
 
@@ -22,6 +23,7 @@ from private_rooms import room_open_sync, room_put_sync, room_list_sync, room_de
 from todos import TodoStore
 from debts import DebtStore
 from decay_engine import BOTTLE_DOMAIN
+import pinned_surfacing as _ps
 
 logger = logging.getLogger("ombre_brain")
 
@@ -316,7 +318,7 @@ async def breath(
     until: str = "",
     bucket_id: str = "",
 ) -> str:
-    """检索/浮现记忆。不传query或传空=自动浮现,有query=关键词检索。传bucket_id或把12位hex桶ID放进query时走精确检索,跳过模糊/向量/随机召回。max_tokens控制返回总token上限(默认12000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。since/until用ISO日期(如2026-06-01)开时间窗,语法同raw_search:空query+时间窗=窗口内桶按created_at正序(叙事顺序,wander桶排除,钉选不豁免);query+时间窗=窗口内检索。until含当天;只给一端=从since到现在/从最早到until。"""
+    """检索/浮现记忆。不传query或传空=自动浮现(L1全出;48h内新钉必出;L2看最近两天有没有提到它;末尾附最近两天桶目录),有query=关键词检索(钉选桶也搜,标📌)。脱水API坏了用原文节选顶上并在顶部警告。传bucket_id或把12位hex桶ID放进query时走精确检索,跳过模糊/向量/随机召回。max_tokens控制返回总token上限(默认12000)。domain逗号分隔,valence/arousal 0~1(-1忽略)。max_results控制返回数量上限(默认20,最大50)。importance_min>=1时按重要度批量拉取(不走语义搜索,按importance降序返回最多20条)。since/until用ISO日期(如2026-06-01)开时间窗,语法同raw_search:空query+时间窗=窗口内桶按created_at正序(叙事顺序,wander桶排除,钉选不豁免);query+时间窗=窗口内检索。until含当天;只给一端=从since到现在/从最早到until。"""
     # Snapshot BEFORE on_interaction: the overnight attachment climb must be
     # visible, not erased by the act of looking.
     pre = None
@@ -325,12 +327,20 @@ async def breath(
         pre = _desire_engine.snapshot()
     except Exception as e:
         logger.warning(f"Desire pre-snapshot failed / pre快照失败: {e}")
-    result = await _breath_core(
-        query=query, max_tokens=max_tokens, domain=domain,
-        valence=valence, arousal=arousal,
-        max_results=max_results, importance_min=importance_min,
-        since=since, until=until, bucket_id=bucket_id,
-    )
+    errs: list = []
+    ctx_token = _DEHYDRATE_ERRS.set(errs)
+    try:
+        result = await _breath_core(
+            query=query, max_tokens=max_tokens, domain=domain,
+            valence=valence, arousal=arousal,
+            max_results=max_results, importance_min=importance_min,
+            since=since, until=until, bucket_id=bucket_id,
+        )
+    finally:
+        _DEHYDRATE_ERRS.reset(ctx_token)
+    warning = _dehydrate_warning(errs)
+    if warning:
+        result = f"{warning}\n\n{result}"
     try:
         block = _desire_engine.state_block(pre)
         if block:
@@ -410,6 +420,80 @@ def _is_wander_bucket(meta: dict) -> bool:
 
 
 _BUCKET_ID_RE = re.compile(r"^[0-9a-f]{12}$", re.IGNORECASE)
+
+
+# =============================================================
+# 脱水兜底 (2026-11-11)
+#
+# 脱水只有 API 一条路。11/11 DeepSeek 余额用光，402 一来，
+# 所有没进缓存的桶在 breath 里被 except 吞掉、整只跳过：
+# 当天的早安、午休、两条想鸿湍的铃，一条都没浮上来，也没人知道。
+#
+# 现在失败就拿原文节选顶上（截断只砍尾巴不改字），
+# 并把错误记进 errs，breath 顶头挂一句警告——坏了要看得见。
+# =============================================================
+_DEHYDRATE_ERRS: contextvars.ContextVar = contextvars.ContextVar("dehydrate_errs", default=None)
+
+
+async def _render_bucket(content: str, meta: dict, errs: list | None = None,
+                         raw_limit: int = 600) -> str:
+    try:
+        return await _dehydrator.dehydrate(content, meta)
+    except Exception as e:
+        logger.warning(f"Dehydrate failed, falling back to raw excerpt / 脱水失败用原文节选: {e}")
+        if errs is None:
+            errs = _DEHYDRATE_ERRS.get()
+        if errs is not None:
+            errs.append(str(e))
+        raw = (content or "").strip()
+        if len(raw) > raw_limit:
+            raw = raw[:raw_limit] + "…"
+        try:
+            return _dehydrator._format_output(raw, meta)
+        except Exception:
+            name = (meta or {}).get("name", "")
+            return f"📌 记忆桶: {name}\n{raw}"
+
+
+def _recent_index_lines(all_buckets: list, shown: set, hours: float = 48,
+                        limit: int = 30) -> list:
+    """最近 hours 小时新建、这次没展开的桶，一行一只：[SGT 时间] 标题 · ID。新的在前。"""
+    from datetime import timedelta, timezone as _tz
+    now = datetime.now(_tz.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(hours=hours)
+    rows = []
+    for b in all_buckets:
+        meta = b.get("metadata", {})
+        if b["id"] in shown or meta.get("type") == "i" or _ps.is_wander(meta):
+            continue
+        dt = _ps.parse_ts(meta.get("created"))
+        if dt is None or dt < cutoff:
+            continue
+        rows.append((dt, b))
+    rows.sort(key=lambda x: x[0], reverse=True)
+    lines = []
+    for dt, b in rows[:limit]:
+        meta = b["metadata"]
+        mark = "📌" if _ps.is_pinned(meta) else ("🫧" if meta.get("type") == "feel" else
+                ("📝" if meta.get("type") == "note" else ""))
+        sgt = (dt + timedelta(hours=8)).strftime("%m-%d %H:%M")
+        name = meta.get("name") or "未命名"
+        lines.append(f"[{sgt}] {mark}{name} · {b['id']}")
+    if len(rows) > limit:
+        lines.append(f"……还有 {len(rows) - limit} 只，用 since/until 翻")
+    return lines
+
+
+def _dehydrate_warning(errs: list) -> str:
+    if not errs:
+        return ""
+    first = errs[0]
+    hint = ""
+    if "402" in first or "Insufficient Balance" in first:
+        hint = "（像是脱水 API 余额用完了）"
+    elif "401" in first or "403" in first:
+        hint = "（像是脱水 API 的 key 出了问题）"
+    return f"⚠️ 脱水接口失败 {len(errs)} 次{hint}，这些桶用原文节选顶上：{first[:120]}"
 
 
 async def _format_exact_bucket(bucket: dict, max_tokens: int) -> str:
@@ -523,7 +607,7 @@ async def _breath_core(
         for b in windowed:
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
-                summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                summary = await _render_bucket(strip_wikilinks(b["content"]), clean_meta)
                 t = count_tokens_approx(summary)
                 if token_used + t > max_tokens:
                     break
@@ -568,7 +652,7 @@ async def _breath_core(
                 break
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
-                summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                summary = await _render_bucket(strip_wikilinks(b["content"]), clean_meta)
                 t = count_tokens_approx(summary)
                 if token_used + t > max_tokens:
                     break
@@ -592,73 +676,35 @@ async def _breath_core(
 
         # =============================================================
         # Pinned bucket tiered surfacing (L1/L2/L3)
-        # 2026-07-12: hardcoded fallback sets removed — all legacy pinned
-        # buckets were backfilled with pin_level via trace on this date.
-        # pin_level now lives entirely in metadata; unknown → default L2.
+        # 2026-11-11: 挑选逻辑搬去 pinned_surfacing.py。旧的「标签和最近
+        # 五只桶重合几个」让大路标签多的桶永远赢；11/6 五月五号那只因此
+        # 没上来。现在：L1 全出 → 48h 内新钉必出 → L2 看最近两天有没有
+        # 提到它的具体词 → 一个轮值座给最久没露脸的 L2 → L3 背景。
         # =============================================================
-        def _get_pin_level(b):
-            """Read pin_level from metadata; unknown or missing → default L2."""
-            pl = b["metadata"].get("pin_level")
-            if pl in (1, 2, 3):
-                return pl
-            return 2  # default L2
+        # 注意：本函数下面有一句局部 `from datetime import datetime`，
+        # 这里用 datetime 会 UnboundLocalError，所以 now 交给挑选器自己取。
+        pinned_buckets = [b for b in all_buckets if _ps.is_pinned(b["metadata"])]
+        try:
+            surfacing_plan = _ps.select_pinned(pinned_buckets, all_buckets)
+        except Exception as e:
+            # 挑选器坏了也不许把 L1 弄丢
+            logger.warning(f"Pinned selection failed, L1 only / 钉选挑选失败只出L1: {e}")
+            surfacing_plan = [(b, "必出") for b in pinned_buckets if _ps.pin_level(b["metadata"]) == 1]
 
-        pinned_buckets = [
-            b for b in all_buckets
-            if b["metadata"].get("pinned") or b["metadata"].get("protected")
-        ]
-
-        # Classify pinned buckets by level
-        l1_buckets = [b for b in pinned_buckets if _get_pin_level(b) == 1]
-        l2_buckets = [b for b in pinned_buckets if _get_pin_level(b) == 2]
-        l3_buckets = [b for b in pinned_buckets if _get_pin_level(b) == 3]
-
-        # L3: random 1-2 from pool
-        random.shuffle(l3_buckets)
-        l3_selected = l3_buckets[:min(2, len(l3_buckets))]
-
-        # L2: match by tags/domain overlap with recent unresolved buckets' top tags
-        session_tags = set()
-        recent_unresolved = sorted(
-            [b for b in all_buckets
-             if not b["metadata"].get("resolved", False)
-             and b["metadata"].get("type") not in ("permanent", "feel", "note", "i")
-             and not b["metadata"].get("pinned", False)],
-            key=lambda b: b["metadata"].get("created", ""),
-            reverse=True,
-        )[:5]
-        for b in recent_unresolved:
-            session_tags.update(t.lower() for t in b["metadata"].get("tags", []))
-            session_tags.update(d.lower() for d in b["metadata"].get("domain", []))
-
-        l2_matched = []
-        for b in l2_buckets:
-            bucket_tags = {t.lower() for t in b["metadata"].get("tags", [])}
-            bucket_domains = {d.lower() for d in b["metadata"].get("domain", [])}
-            overlap = session_tags & (bucket_tags | bucket_domains)
-            if overlap:
-                l2_matched.append((len(overlap), b))
-
-        # Sort by tag overlap density (descending), cap at 6
-        l2_matched.sort(key=lambda x: x[0], reverse=True)
-        l2_matched = [b for _, b in l2_matched[:6]]
-
-        # Combine: L1 (all) + L2 (matched, max 6) + L3 (random 1-2)
-        surfacing_pinned = l1_buckets + l2_matched + l3_selected
-
+        _reason_count = {}
+        for _, r in surfacing_plan:
+            k = r.split(":")[0]
+            _reason_count[k] = _reason_count.get(k, 0) + 1
         logger.info(
-            f"Pinned tiered: L1={len(l1_buckets)}, "
-            f"L2 matched={len(l2_matched)}/{len(l2_buckets)}, "
-            f"L3 selected={len(l3_selected)}/{len(l3_buckets)}, "
-            f"total surfacing={len(surfacing_pinned)}/{len(pinned_buckets)}"
+            f"Pinned plan: {_reason_count} total={len(surfacing_plan)}/{len(pinned_buckets)}"
         )
 
         pinned_results = []
         pinned_hit_ids = []  # 刀二: parallel to pinned_results, survives truncation below
-        for b in surfacing_pinned:
+        for b, reason in surfacing_plan:
             try:
-                level = _get_pin_level(b)
-                tier = f"L{level}"
+                level = _ps.pin_level(b["metadata"])
+                tier = f"L{level}" if reason == "必出" else f"L{level}·{reason}"
 
                 # =========================================================
                 # L1 原文直出 (2026-09-09)
@@ -689,7 +735,7 @@ async def _breath_core(
                     summary = f"📌 记忆桶: {name}\n{raw}"
                 else:
                     clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
-                    summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                    summary = await _render_bucket(strip_wikilinks(b["content"]), clean_meta, raw_limit=800)
 
                 pinned_results.append(f"📌 [{tier}] [bucket_id:{b['id']}] {summary}")
                 pinned_hit_ids.append(b["id"])
@@ -703,14 +749,15 @@ async def _breath_core(
         pinned_used = count_tokens_approx(pinned_text) if pinned_text else 0
 
         if pinned_used > pinned_cap and pinned_results:
-            # Truncate pinned results to fit within cap (keep L1 first)
+            # Fit within cap in plan order (L1 first). 2026-11-11: 装不下的跳过、
+            # 继续往后看，不再一刀砍尾巴——短的轮值/背景卡还有机会挤进来。
             truncated = []
             truncated_ids = []  # 刀二: only truly returned buckets count as hits
             used = 0
             for pr, pid in zip(pinned_results, pinned_hit_ids):
                 t = count_tokens_approx(pr)
                 if used + t > pinned_cap:
-                    break
+                    continue
                 truncated.append(pr)
                 truncated_ids.append(pid)
                 used += t
@@ -776,6 +823,8 @@ async def _breath_core(
             if age is not None and age < 15:
                 recent_new.append(b)
 
+        # 新的在前：预算不够时先保住最新的那只
+        recent_new.sort(key=lambda b: str(b["metadata"].get("created", "")), reverse=True)
         recent_new_ids = {b["id"] for b in recent_new}
 
         logger.info(
@@ -809,10 +858,11 @@ async def _breath_core(
                 break
             try:
                 clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
-                summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                summary = await _render_bucket(strip_wikilinks(b["content"]), clean_meta)
                 summary_tokens = count_tokens_approx(summary)
                 if summary_tokens > token_budget:
-                    break
+                    # 2026-11-11: 一只太长不代表后面的短桶也装不下
+                    continue
                 score = _decay_engine.calculate_score(b["metadata"])
                 is_recent = b["id"] in recent_new_ids
                 tag = "🕐 最近" if is_recent else f"权重:{score:.2f}"
@@ -866,6 +916,22 @@ async def _breath_core(
             parts.append("=== 奶瓶 ===\n" + "\n---\n".join(bottle_results))
         if dynamic_results:
             parts.append("=== 浮现记忆 ===\n" + "\n---\n".join(dynamic_results))
+
+        # =============================================================
+        # 最近两天目录 (2026-11-11)
+        # 11/6 漏了五月五号那只桶之后立过一条规矩（953c67d779be）：
+        # 新窗口先按日子翻最近两天。规矩靠记性，记性会漏；写进代码里。
+        # 只列标题和 ID，不展开——要细看就拿 ID 去 breath。
+        # =============================================================
+        try:
+            shown = set(pinned_hit_ids) | set(dynamic_hit_ids)
+            index_lines = _recent_index_lines(all_buckets, shown, hours=48, limit=30)
+            if index_lines:
+                parts.append(
+                    "=== 最近两天（没展开的，SGT） ===\n" + "\n".join(index_lines)
+                )
+        except Exception as e:
+            logger.warning(f"Recent index failed / 最近两天目录失败: {e}")
 
         # --- Auto-attach recent I (self-cognition) entries ---
         try:
@@ -970,8 +1036,9 @@ async def _breath_core(
         logger.error(f"Search failed / 检索失败: {e}")
         return "检索过程出错，请稍后重试。"
 
-    # Exclude pinned/protected from search results
-    matches = [b for b in matches if not (b["metadata"].get("pinned") or b["metadata"].get("protected"))]
+    # 2026-11-11: 钉选桶不再从搜索里滤掉。以前一刀全滤，L2/L3 钉选桶
+    # 只能靠精确 ID 或时间窗才够得着——搜「五月五号」，标题里写着五月五号
+    # 的那只钉选桶出不来。钉选桶照常参与打分，命中了就出，前面挂个 📌。
 
     # --- Vector similarity channel ---
     matched_ids = {b["id"] for b in matches}
@@ -980,7 +1047,7 @@ async def _breath_core(
         for bucket_id, sim_score in vector_results:
             if bucket_id not in matched_ids and sim_score > 0.5:
                 bucket = await _bucket_mgr.get(bucket_id)
-                if bucket and not (bucket["metadata"].get("pinned") or bucket["metadata"].get("protected")):
+                if bucket:
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
                     matches.append(bucket)
@@ -1011,15 +1078,20 @@ async def _breath_core(
                 original_v = float(clean_meta.get("valence", 0.5))
                 shift = (q_valence - 0.5) * 0.2  # ±0.1 max shift
                 clean_meta["valence"] = max(0.0, min(1.0, original_v + shift))
-            summary = await _dehydrator.dehydrate(strip_wikilinks(bucket["content"]), clean_meta)
+            summary = await _render_bucket(strip_wikilinks(bucket["content"]), clean_meta)
             summary_tokens = count_tokens_approx(summary)
             if token_used + summary_tokens > max_tokens:
-                break
-            await _bucket_mgr.touch(bucket["id"])
-            if bucket.get("vector_match"):
-                summary = f"[语义关联] [bucket_id:{bucket['id']}] {summary}"
+                continue
+            pin_mark = ""
+            if _ps.is_pinned(bucket["metadata"]):
+                pin_mark = f"📌L{_ps.pin_level(bucket['metadata'])} "
             else:
-                summary = f"[bucket_id:{bucket['id']}] {summary}"
+                # 钉选桶不 touch：touch 会改 last_active，钉选桶不走衰减，没意义
+                await _bucket_mgr.touch(bucket["id"])
+            if bucket.get("vector_match"):
+                summary = f"{pin_mark}[语义关联] [bucket_id:{bucket['id']}] {summary}"
+            else:
+                summary = f"{pin_mark}[bucket_id:{bucket['id']}] {summary}"
             results.append(summary)
             hit_ids.append(bucket["id"])
             token_used += summary_tokens
@@ -1038,7 +1110,7 @@ async def _breath_core(
                     if not linked_bucket:
                         continue
                     lb_meta = {k: v for k, v in linked_bucket["metadata"].items() if k != "tags"}
-                    lb_summary = await _dehydrator.dehydrate(
+                    lb_summary = await _render_bucket(
                         strip_wikilinks(linked_bucket["content"]), lb_meta
                     )
                     lb_tokens = count_tokens_approx(lb_summary)
@@ -1071,7 +1143,7 @@ async def _breath_core(
                 drift_results = []
                 for b in drifted:
                     clean_meta = {k: v for k, v in b["metadata"].items() if k != "tags"}
-                    summary = await _dehydrator.dehydrate(strip_wikilinks(b["content"]), clean_meta)
+                    summary = await _render_bucket(strip_wikilinks(b["content"]), clean_meta)
                     drift_results.append(f"[surface_type: random]\n{summary}")
                     hit_ids.append(b["id"])  # 刀二: drifted buckets are returned content
                 results.append("--- 忽然想起来 ---\n" + "\n---\n".join(drift_results))
@@ -1521,7 +1593,7 @@ async def pulse(include_archive: bool = False) -> str:
     for b in buckets:
         meta = b.get("metadata", {})
         if meta.get("pinned") or meta.get("protected"):
-            icon = "📌"
+            icon = f"📌L{_ps.pin_level(meta)}"
         elif meta.get("type") == "permanent":
             icon = "📦"
         elif meta.get("type") == "feel":
