@@ -301,6 +301,9 @@ class BucketManager:
         if "resolved" in kwargs:
             post["resolved"] = bool(kwargs["resolved"])
         if "pinned" in kwargs:
+            if kwargs["pinned"] and not post.get("pinned", False):
+                # 什么时候钉上的。浮现时 48 小时内新钉的必出（pinned_surfacing.py）
+                post["pinned_at"] = now_iso()
             post["pinned"] = bool(kwargs["pinned"])
             if kwargs["pinned"]:
                 post["importance"] = 10  # pinned → lock importance to 10
